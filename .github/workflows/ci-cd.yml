@@ -1,0 +1,156 @@
+name: "CI-CD Pipeline"
+
+concurrency:
+  group: selfheal-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches: [ "main", "**" ]  # watch all branches
+  workflow_dispatch:
+
+jobs:
+  build-test-deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      OPENAI_API_KEY_DECLAN: ${{ secrets.OPENAI_API_KEY_DECLAN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      SKYVERN_API_KEY: ${{ secrets.SKYVERN_API_KEY }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_SECRET: ${{ secrets.AZURE_SECRET }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      INFRACOST_API_KEY: ${{ secrets.INFRACOST_API_KEY }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: List initial files
+        run: ls -la
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.9"
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install requests pytest
+          pip install "openai==0.28.*"
+
+      # Optional: If there's a Dockerfile or docker-compose present, do Docker build & test
+      - name: Docker build
+        if: ${{ steps.check_docker.outputs.found_docker == 'true' }}
+        run: |
+          echo "Building Docker image..."
+          docker build -t test-image .
+
+      - name: Docker run tests
+        if: ${{ steps.check_docker.outputs.found_docker == 'true' }}
+        run: |
+          echo "Running tests in Docker (customize as needed)"
+          docker run --rm test-image pytest --maxfail=1 --disable-warnings -q || echo "Docker-based tests failed..."
+
+      - name: Python-based Tests & capture logs
+        run: |
+          pytest --maxfail=1 --disable-warnings -q 2>&1 | tee test_output.log
+          exit_code=${PIPESTATUS[0]}
+          if [ $exit_code -ne 0 ]; then
+            echo "[pytest logs]" > fail_logs.txt
+            cat test_output.log >> fail_logs.txt
+            exit $exit_code
+          fi
+
+      - name: Self-Healing
+        if: failure()
+        run: |
+          echo "Self-Heal attempt: gather code + logs -> fail_logs.txt, run orchestrator."
+          git config user.name "SelfHealBot"
+          git config user.email "selfheal@bot.com"
+
+          # We also cat app.py + tests/*.py + any other .py files, for GPT context
+          # This is simplistic; in advanced usage, you might gather the entire repo.
+          for f in $(find . -name '*.py'); do
+            echo "\n[FILE: $f]:" >> fail_logs.txt
+            cat "$f" >> fail_logs.txt
+          done
+
+          # Also gather conversation_log.md if present
+          if [ -f conversation_log.md ]; then
+            echo "\n[CONVERSATION LOG so far]:" >> fail_logs.txt
+            cat conversation_log.md >> fail_logs.txt
+          fi
+
+          git add fail_logs.txt
+          git commit -m "Add fail_logs with code & logs [skip ci]" || echo "No changes to commit"
+          git push --force origin ${{ github.ref }}
+
+          echo "Running orchestrator..."
+          # We need to pass the master system prompt into orchestrator, so we set an env var
+          # or you can bake it directly. We'll do env var to keep the code flexible.
+          export MASTER_SYSTEM_PROMPT_OVERRIDE="
+You are a master software engineer working inside a GitHub repository.
+You have permission to do anything needed to build and fix the project,
+including:
+- Creating or modifying multiple files in any folders.
+- Creating new branches if needed.
+- Writing Dockerfiles or docker-compose files.
+- Writing scripts to run in GitHub Codespaces or CI.
+- Writing advanced unit or integration tests.
+- Integrating with Skyvern for live web testing if available (SKYVERN_API_KEY).
+- Summarizing logs and test failures for the user in plain, easy-to-understand text.
+
+Use a specialized code-block format:
+- For creating/updating a file, produce a code block starting with:
+    ```branch=MY_BRANCH
+    path=myfolder/myfile.py
+    [the full file contents]
+    ```
+  If you do not need multiple branches, you can use \"branch=main\" or any branch name.
+
+- If you need to run CLI or Docker commands, produce:
+    ```run
+    docker build ...
+    docker run ...
+    ...
+    ```
+
+- Provide a short summary of what you did, what you fixed, or next steps inside a block like:
+    summary=Here is a summary in plain text.
+
+You can produce multiple code blocks in one response. We'll parse them all.
+We will skip over any text outside of ``` code blocks except for the \"summary=\" block,
+so place all code or instructions in code blocks.
+
+ALWAYS produce a `summary=` block at the end so the user understands your changes.
+Remember that your code might be tested automatically after you provide it.
+"
+
+          python ./orchestrator.py
+
+          echo "Committing orchestrator changes..."
+          git add .
+          git commit -m "Selfheal attempt [skip ci]" || echo "No changes to commit"
+          git push --force origin ${{ github.ref }}
+
+  # Additional step to see if there's a Dockerfile or docker-compose
+  check_docker:
+    runs-on: ubuntu-latest
+    outputs:
+      found_docker: ${{ steps.check.outputs.found }}
+    steps:
+      - uses: actions/checkout@v3
+      - id: check
+        run: |
+          if [ -f Dockerfile ] || [ -f docker-compose.yml ]; then
+            echo "found=true" >> $GITHUB_OUTPUT
+          else
+            echo "found=false" >> $GITHUB_OUTPUT

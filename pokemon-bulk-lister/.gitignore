@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.DS_Store
+output/crops/*
+output/csvs/*
+output/*.json
+output/*.html
+input/grids/*
+!**/.gitkeep

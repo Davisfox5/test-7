@@ -1,0 +1,108 @@
+"""pokemontcg.io wrapper — provides TCGPlayer market prices keyed by name+set+number."""
+from __future__ import annotations
+
+import os
+import time
+from typing import Optional
+
+import requests
+
+
+BASE_URL = "https://api.pokemontcg.io/v2"
+
+
+class TCGPlayerClient:
+    def __init__(self, api_key: Optional[str] = None, timeout: int = 15) -> None:
+        self.api_key = api_key or os.getenv("POKEMONTCG_API_KEY") or ""
+        self.timeout = timeout
+        self._session = requests.Session()
+        if self.api_key:
+            self._session.headers.update({"X-Api-Key": self.api_key})
+
+    def _get(self, path: str, params: dict) -> dict:
+        url = f"{BASE_URL}{path}"
+        for attempt in range(3):
+            resp = self._session.get(url, params=params, timeout=self.timeout)
+            if resp.status_code == 429:
+                time.sleep(2 ** attempt)
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        resp.raise_for_status()
+        return {}
+
+    def find_card(
+        self,
+        name: str,
+        set_name: Optional[str] = None,
+        set_code: Optional[str] = None,
+        card_number: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Find the best matching card. Most specific identifiers win."""
+        clauses: list[str] = []
+        if name:
+            clauses.append(f'name:"{_escape(name)}"')
+        if set_code:
+            clauses.append(f'set.id:{_escape(set_code)}')
+        elif set_name:
+            clauses.append(f'set.name:"{_escape(set_name)}"')
+        if card_number:
+            clauses.append(f'number:{_escape(card_number)}')
+
+        if not clauses:
+            return None
+
+        data = self._get("/cards", {"q": " ".join(clauses), "pageSize": 10})
+        cards = data.get("data") or []
+        if not cards:
+            return None
+
+        if card_number:
+            for c in cards:
+                if str(c.get("number", "")).lstrip("0") == str(card_number).lstrip("0"):
+                    return c
+        return cards[0]
+
+    def market_price(self, card: dict, prefer_holo: bool = False) -> Optional[float]:
+        """Pull TCGPlayer market price from the card payload.
+
+        pokemontcg.io exposes TCGPlayer prices under
+        card['tcgplayer']['prices'][variant]['market'].
+        """
+        tcg = (card or {}).get("tcgplayer") or {}
+        prices = tcg.get("prices") or {}
+        if not prices:
+            return None
+
+        priority = (
+            ["holofoil", "reverseHolofoil", "normal", "1stEditionHolofoil", "unlimitedHolofoil"]
+            if prefer_holo
+            else ["normal", "holofoil", "reverseHolofoil", "1stEdition", "unlimited"]
+        )
+
+        for variant in priority:
+            v = prices.get(variant)
+            if v and isinstance(v, dict) and v.get("market"):
+                return float(v["market"])
+
+        for variant_data in prices.values():
+            if isinstance(variant_data, dict) and variant_data.get("market"):
+                return float(variant_data["market"])
+        return None
+
+    def lookup_price(
+        self,
+        name: str,
+        set_name: Optional[str] = None,
+        set_code: Optional[str] = None,
+        card_number: Optional[str] = None,
+        is_holo: bool = False,
+    ) -> tuple[Optional[float], Optional[dict]]:
+        card = self.find_card(name=name, set_name=set_name, set_code=set_code, card_number=card_number)
+        if not card:
+            return None, None
+        return self.market_price(card, prefer_holo=is_holo), card
+
+
+def _escape(value: str) -> str:
+    return value.replace('"', '\\"')

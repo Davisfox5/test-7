@@ -112,7 +112,8 @@ def main() -> int:
 
     out_path = Path(args.out)
     with out_path.open("w") as f:
-        f.write(TEMPLATE_HEAD.format(n=len(cards), flagged=flagged))
+        header = TEMPLATE_HEAD.replace("{n}", str(len(cards))).replace("{flagged}", str(flagged))
+        f.write(header)
         for c in cards_sorted:
             f.write(render_row(c))
         f.write(TEMPLATE_FOOT)

@@ -24,20 +24,44 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".tif", ".tiff"}
 EMPTY_POCKET_STDDEV = 12.0  # cells below this color stddev are considered empty
 
 
+MIN_PAGE_FRACTION = 0.6  # detected bbox must cover at least this much of the image
+                          # in each dimension; otherwise we fall back to the whole image
+                          # (the previous version often picked a single card as the "page").
+
+
 def find_page_bbox(img: np.ndarray) -> tuple[int, int, int, int]:
-    """Find the bounding box of the binder page in the image."""
+    """Find the bounding box of the binder page in the image.
+
+    Uses Otsu thresholding + a morphological close so adjacent cards merge into
+    one blob. Falls back to the full image if the detected bbox is too narrow
+    or too short — common when the photo is already a tightly-cropped binder
+    page or when a single bright card outshines the rest of the page.
+    """
+    img_h, img_w = img.shape[:2]
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (7, 7), 0)
     _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Close the gaps between cards so the page reads as one contour, not nine.
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (max(15, img_w // 30), max(15, img_h // 30)),
+    )
+    closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
-        h, w = img.shape[:2]
-        return 0, 0, w, h
+        return 0, 0, img_w, img_h
 
     largest = max(contours, key=cv2.contourArea)
     x, y, w, h = cv2.boundingRect(largest)
-    img_h, img_w = img.shape[:2]
+
+    # Sanity check: a real binder page covers most of the frame in both
+    # dimensions. If not, the photo is probably already cropped or the
+    # threshold latched onto a single card — use the whole image instead.
+    if w < img_w * MIN_PAGE_FRACTION or h < img_h * MIN_PAGE_FRACTION:
+        return 0, 0, img_w, img_h
+
     pad_x = int(w * 0.01)
     pad_y = int(h * 0.01)
     x = max(0, x + pad_x)

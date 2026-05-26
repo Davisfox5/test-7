@@ -9,5 +9,7 @@ output/crops/*
 output/csvs/*
 output/*.json
 output/*.html
+output/*.sqlite*
+output/cache/
 input/grids/*
 !**/.gitkeep

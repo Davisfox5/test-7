@@ -37,6 +37,10 @@
       <label><input type="checkbox" id="filter-unid" /> Unidentified only</label>
     </div>
     <div class="toolbar-right">
+      <label title="Adds the 365-day eBay sold median (~5s per card)">
+        <input type="checkbox" id="use-terapeak" />
+        Use Terapeak <span class="muted small" id="terapeak-status">(checking…)</span>
+      </label>
       <button id="bulk-paste-btn">Paste IDs (JSON)</button>
       <button id="run-pricing-btn">Run pricing (all)</button>
       <button id="export-csv-btn">Export CSVs</button>
@@ -55,16 +59,15 @@
           <th>Crop</th>
           <th>Identified</th>
           <th>Set / # / Rarity</th>
-          <th>TCG</th>
-          <th>CM</th>
-          <th>eBay med</th>
-          <th>eBay max</th>
+          <th>TCGplayer<br><span class="th-sub">market USD</span></th>
+          <th>Cardmarket<br><span class="th-sub">trend USD</span></th>
+          <th>eBay<br><span class="th-sub" id="ebay-col-sub">median (best window)</span></th>
           <th>Final</th>
           <th>Conf.</th>
           <th>Actions</th>
         </tr>
       </thead>
-      <tbody id="cards-body"><tr><td colspan="10" class="muted">Loading…</td></tr></tbody>
+      <tbody id="cards-body"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
     </table>
   </section>
 

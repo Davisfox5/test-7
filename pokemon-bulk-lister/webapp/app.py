@@ -292,13 +292,22 @@ def api_price_card(card_id: int):
 
 @app.route("/api/pricing/run-all", methods=["POST"])
 def api_run_pricing_all():
+    use_terapeak = request.args.get("terapeak") == "1" or (request.get_json(silent=True) or {}).get("terapeak")
     with _job_lock:
         if _job_state["running"]:
             return jsonify({"error": "another job is running"}), 409
-        _job_state.update(running=True, progress=0, total=0, message="starting…")
+        _job_state.update(
+            running=True, progress=0, total=0,
+            message="starting…", terapeak=bool(use_terapeak),
+        )
 
     def worker():
+        terapeak = None
         try:
+            if use_terapeak:
+                _job_state["message"] = "starting Terapeak browser…"
+                from lib.terapeak_client import TerapeakClient  # local import
+                terapeak = TerapeakClient()
             with db.connect(DB_PATH) as conn:
                 cards = db.list_cards(conn, sort="newest")
             targets = [c for c in cards if c.get("name")]
@@ -307,17 +316,28 @@ def api_run_pricing_all():
                 _job_state["progress"] = i
                 _job_state["message"] = f"{card.get('name')} ({i}/{len(targets)})"
                 try:
-                    patch = _price_card(card)
+                    patch = _price_card(card, terapeak=terapeak)
                     with db.connect(DB_PATH) as conn:
                         db.update_card(conn, int(card["id"]), patch)
                 except Exception as exc:
                     print(f"[pricing] {card.get('name')}: {exc}", file=sys.stderr)
             _job_state["message"] = "done"
         finally:
+            if terapeak is not None:
+                try:
+                    terapeak.close()
+                except Exception:
+                    pass
             _job_state["running"] = False
 
     threading.Thread(target=worker, daemon=True).start()
     return jsonify({"started": True})
+
+
+@app.route("/api/terapeak/status")
+def api_terapeak_status():
+    state_path = ROOT / os.getenv("TERAPEAK_STATE_PATH", "output/cache/terapeak_state.json")
+    return jsonify({"logged_in": state_path.exists(), "state_path": str(state_path)})
 
 
 @app.route("/api/pricing/status")
@@ -325,7 +345,7 @@ def api_pricing_status():
     return jsonify(_job_state)
 
 
-def _price_card(card: dict) -> dict:
+def _price_card(card: dict, terapeak=None) -> dict:
     tcg = get_tcg()
     ebay = get_ebay()
 
@@ -351,11 +371,20 @@ def _price_card(card: dict) -> dict:
     except EbayAuthError as exc:
         print(f"[ebay auth] {exc}", file=sys.stderr)
 
+    terapeak_stats: dict[str, Any] = {"median": None, "count": 0}
+    if terapeak is not None:
+        try:
+            tp_query = " ".join(p for p in [name, set_name, card_number, "pokemon"] if p)
+            terapeak_stats = terapeak.search(tp_query, days=365)
+        except Exception as exc:
+            print(f"[terapeak] {name}: {exc}", file=sys.stderr)
+
     result = aggregate(
         tcgplayer_market=tcg_price,
         ebay_median_30d=ebay_stats.get("median"),
         ebay_max_30d=ebay_stats.get("max"),
         cardmarket_trend_usd=cm_usd,
+        terapeak_median_usd=terapeak_stats.get("median"),
     )
 
     patch: dict[str, Any] = {
@@ -365,6 +394,8 @@ def _price_card(card: dict) -> dict:
         "ebay_median_30d": ebay_stats.get("median"),
         "ebay_max_30d": ebay_stats.get("max"),
         "ebay_sold_count_30d": ebay_stats.get("count", 0),
+        "terapeak_median_usd": terapeak_stats.get("median"),
+        "terapeak_sold_count_365d": terapeak_stats.get("count", 0),
         "final_price": result.price,
         "pricing_confidence": result.confidence,
         "outlier_flag": result.outlier_flag,

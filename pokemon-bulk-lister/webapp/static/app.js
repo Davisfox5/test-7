@@ -44,11 +44,27 @@ function fmt(v) {
   return v;
 }
 
+function bestEbay(card) {
+  // Prefer Terapeak's 365-day median when present (deeper signal),
+  // otherwise fall back to the 30-day MI median.
+  if (card.terapeak_median_usd != null && card.terapeak_median_usd > 0) {
+    return { value: card.terapeak_median_usd, window: "365d", count: card.terapeak_sold_count_365d };
+  }
+  if (card.ebay_median_30d != null && card.ebay_median_30d > 0) {
+    return { value: card.ebay_median_30d, window: "30d", count: card.ebay_sold_count_30d };
+  }
+  return { value: null, window: null, count: 0 };
+}
+
 function renderRow(card) {
   const flagClass = card.needs_review ? "flag" : "";
   const setBits = [card.set_name, card.card_number ? `#${card.card_number}` : "", card.rarity]
     .filter(Boolean)
     .join(" · ");
+  const ebay = bestEbay(card);
+  const ebayCell = ebay.value == null
+    ? `<span class="muted">—</span>`
+    : `${fmt(ebay.value)}<div class="muted small">${ebay.window} · n=${ebay.count}</div>`;
   return `
     <tr class="${flagClass}" data-id="${card.id}">
       <td class="thumb"><img src="/${card.crop_path}" alt="" loading="lazy" /></td>
@@ -60,8 +76,7 @@ function renderRow(card) {
       <td class="muted small">${escapeHtml(setBits)}</td>
       <td class="price">${fmt(card.tcgplayer_market)}</td>
       <td class="price">${fmt(card.cardmarket_trend_usd)}</td>
-      <td class="price">${fmt(card.ebay_median_30d)}</td>
-      <td class="price">${fmt(card.ebay_max_30d)}</td>
+      <td class="price">${ebayCell}</td>
       <td class="price"><strong>${fmt(card.final_price)}</strong></td>
       <td class="conf">${(card.pricing_confidence ?? 0).toFixed(2)}</td>
       <td class="actions">
@@ -273,14 +288,26 @@ function setupToolbar() {
   $("#run-pricing-btn").addEventListener("click", async () => {
     const btn = $("#run-pricing-btn");
     btn.disabled = true;
+    const useTerapeak = $("#use-terapeak").checked ? "1" : "0";
     try {
-      await api("/api/pricing/run-all", { method: "POST" });
+      await api(`/api/pricing/run-all?terapeak=${useTerapeak}`, { method: "POST" });
       pollJob();
     } catch (err) {
       alert(err.message);
       btn.disabled = false;
     }
   });
+
+  // One-shot probe of Terapeak login state on page load.
+  api("/api/terapeak/status").then(s => {
+    const el = $("#terapeak-status");
+    if (s.logged_in) {
+      el.textContent = "(logged in)";
+      el.style.color = "#15803d";
+    } else {
+      el.textContent = "(first run will prompt login)";
+    }
+  }).catch(() => {});
 
   $("#export-csv-btn").addEventListener("click", async () => {
     const btn = $("#export-csv-btn");

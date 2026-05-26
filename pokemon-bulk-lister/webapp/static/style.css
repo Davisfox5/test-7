@@ -91,6 +91,7 @@ textarea { font-family: ui-monospace, "SF Mono", monospace; font-size: 12px; wid
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { border-bottom: 1px solid var(--border); padding: 6px 8px; vertical-align: top; text-align: left; }
 th { background: #f8f8f8; font-weight: 600; }
+th .th-sub { display: block; font-weight: 400; color: var(--muted); font-size: 11px; margin-top: 2px; }
 tr.flag { background: var(--row-flag); }
 tr.flag td.conf { color: var(--row-flag-text); font-weight: 600; }
 tr:hover { background: #f3f4f6; }

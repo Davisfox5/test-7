@@ -29,22 +29,35 @@ def aggregate(
     tcgplayer_market: Optional[float],
     ebay_median_30d: Optional[float],
     ebay_max_30d: Optional[float],
+    cardmarket_trend_usd: Optional[float] = None,
+    terapeak_median_usd: Optional[float] = None,
 ) -> PricingResult:
     """Aggregate prices from multiple sources.
 
     Rule:
-        prices = [tcgplayer_market, ebay_median_30d, ebay_max_30d]
-        median = statistics.median(non-null)
+        prices = [all non-null source prices]
+        median = statistics.median(prices)
         candidate = max(prices)
         if candidate > 2.5 * median: use second-highest, flag outlier
         else: use candidate
+
+    Cardmarket trend price should already be FX-converted to USD by the caller.
+    Terapeak gives a longer (~365-day) window than the eBay 30-day stats.
     """
     sources: dict[str, Optional[float]] = {
         "tcgplayer_market": tcgplayer_market,
         "ebay_median_30d": ebay_median_30d,
         "ebay_max_30d": ebay_max_30d,
+        "cardmarket_trend_usd": cardmarket_trend_usd,
+        "terapeak_median_usd": terapeak_median_usd,
     }
-    prices = [tcgplayer_market, ebay_median_30d, ebay_max_30d]
+    prices = [
+        tcgplayer_market,
+        ebay_median_30d,
+        ebay_max_30d,
+        cardmarket_trend_usd,
+        terapeak_median_usd,
+    ]
     valid = _non_null(prices)
 
     if not valid:

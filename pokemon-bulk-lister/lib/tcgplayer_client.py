@@ -1,4 +1,8 @@
-"""pokemontcg.io wrapper — provides TCGPlayer market prices keyed by name+set+number."""
+"""pokemontcg.io wrapper — provides TCGPlayer + Cardmarket prices in one call.
+
+pokemontcg.io exposes both TCGPlayer (USD) and Cardmarket (EUR) prices for the
+same card object, so we hit the API once and extract both.
+"""
 from __future__ import annotations
 
 import os
@@ -64,7 +68,7 @@ class TCGPlayerClient:
         return cards[0]
 
     def market_price(self, card: dict, prefer_holo: bool = False) -> Optional[float]:
-        """Pull TCGPlayer market price from the card payload.
+        """Pull TCGPlayer market price (USD) from the card payload.
 
         pokemontcg.io exposes TCGPlayer prices under
         card['tcgplayer']['prices'][variant]['market'].
@@ -90,6 +94,30 @@ class TCGPlayerClient:
                 return float(variant_data["market"])
         return None
 
+    def cardmarket_trend_eur(self, card: dict, prefer_holo: bool = False) -> Optional[float]:
+        """Pull Cardmarket trend price (EUR) from the card payload.
+
+        pokemontcg.io exposes Cardmarket prices under
+        card['cardmarket']['prices'] with keys like 'trendPrice', 'averageSellPrice',
+        'reverseHoloTrend', etc. We use trendPrice as the main signal.
+        """
+        cm = (card or {}).get("cardmarket") or {}
+        prices = cm.get("prices") or {}
+        if not prices:
+            return None
+
+        if prefer_holo:
+            for key in ("reverseHoloTrend", "trendPrice", "reverseHoloSell", "averageSellPrice"):
+                v = prices.get(key)
+                if v:
+                    return float(v)
+        else:
+            for key in ("trendPrice", "averageSellPrice", "reverseHoloTrend", "reverseHoloSell"):
+                v = prices.get(key)
+                if v:
+                    return float(v)
+        return None
+
     def lookup_price(
         self,
         name: str,
@@ -98,10 +126,37 @@ class TCGPlayerClient:
         card_number: Optional[str] = None,
         is_holo: bool = False,
     ) -> tuple[Optional[float], Optional[dict]]:
+        """Backward-compatible: returns (tcgplayer_market_usd, card)."""
         card = self.find_card(name=name, set_name=set_name, set_code=set_code, card_number=card_number)
         if not card:
             return None, None
         return self.market_price(card, prefer_holo=is_holo), card
+
+    def lookup_prices(
+        self,
+        name: str,
+        set_name: Optional[str] = None,
+        set_code: Optional[str] = None,
+        card_number: Optional[str] = None,
+        is_holo: bool = False,
+    ) -> dict:
+        """One pokemontcg.io call -> both TCGPlayer (USD) and Cardmarket (EUR) prices.
+
+        Returns:
+            {
+                "card": <card dict or None>,
+                "tcgplayer_market_usd": <float or None>,
+                "cardmarket_trend_eur": <float or None>,
+            }
+        """
+        card = self.find_card(name=name, set_name=set_name, set_code=set_code, card_number=card_number)
+        if not card:
+            return {"card": None, "tcgplayer_market_usd": None, "cardmarket_trend_eur": None}
+        return {
+            "card": card,
+            "tcgplayer_market_usd": self.market_price(card, prefer_holo=is_holo),
+            "cardmarket_trend_eur": self.cardmarket_trend_eur(card, prefer_holo=is_holo),
+        }
 
 
 def _escape(value: str) -> str:

@@ -5,3 +5,8 @@ pandas>=2.2.0
 python-dotenv>=1.0.0
 cloudinary>=1.39.0
 Pillow>=10.2.0
+
+# Optional: only needed if you turn on Terapeak headless scraping
+# (--terapeak or ENABLE_TERAPEAK=1). After install, run:
+#   playwright install chromium
+playwright>=1.40.0

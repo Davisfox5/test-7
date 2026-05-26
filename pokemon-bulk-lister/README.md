@@ -78,6 +78,8 @@ python scripts/02_identify_cards.py
 
 # 3. Look up prices and apply the aggregation rule
 python scripts/03_enrich_pricing.py
+# Optionally enable Terapeak headless scraping for 365-day eBay sold history:
+python scripts/03_enrich_pricing.py --terapeak
 
 # 4. Push crops to Cloudinary
 python scripts/04_upload_images.py
@@ -91,18 +93,20 @@ python scripts/06_review_report.py
 
 ## Pricing aggregation
 
-For each card we collect three numbers:
+For each card we collect up to five numbers:
 
 | source | how |
 |---|---|
-| `tcgplayer_market` | pokemontcg.io `tcgplayer.prices.<variant>.market` |
-| `ebay_median_30d`  | median of eBay sold listings (last 30d, NM, US, English) |
-| `ebay_max_30d`     | max of same set |
+| `tcgplayer_market`     | pokemontcg.io `tcgplayer.prices.<variant>.market` (USD) |
+| `cardmarket_trend_usd` | pokemontcg.io `cardmarket.prices.trendPrice` (EUR → USD via `EUR_USD_RATE`) |
+| `ebay_median_30d`      | median of eBay sold listings (last 30d, NM, US, English) |
+| `ebay_max_30d`         | max of same set |
+| `terapeak_median_usd`  | optional — median of Terapeak Research sold listings (last 365d) via Playwright headless scrape |
 
 Rule:
 
 ```
-prices  = [tcgplayer_market, ebay_median_30d, ebay_max_30d]
+prices  = [tcg, cardmarket_usd, ebay_median_30d, ebay_max_30d, terapeak_median_usd]
 median  = statistics.median(non_null(prices))
 candidate = max(prices)
 
@@ -143,9 +147,31 @@ pokemon-bulk-lister/
 └─ README.md
 ```
 
+## Terapeak headless scraping (optional)
+
+eBay's Marketplace Insights API is closed to new applicants and capped at 90 days.
+The Terapeak Research UI inside Seller Hub has the same data going back ~365 days
+and is free for any Seller Hub seller — but Terapeak's Subscription Terms ban
+automated access. This is a personal one-off, so we use it anyway.
+
+```bash
+pip install playwright
+playwright install chromium
+# First run is headful — log in to eBay once; the session is saved.
+python scripts/03_enrich_pricing.py --terapeak
+```
+
+Tunables in `.env`:
+- `TERAPEAK_HEADLESS=1` — flip to `0` if you want to watch.
+- `TERAPEAK_MIN_DELAY` / `TERAPEAK_MAX_JITTER` — pacing between searches (default 4s + 0–4s).
+- `TERAPEAK_PROXIES` — comma-separated list. Round-robined; a new browser context is created per search.
+- `TERAPEAK_STATE_PATH` — where the logged-in session is cached (default `output/cache/terapeak_state.json`). Delete it to re-login.
+
+The scraper writes screenshots + HTML to `output/cache/terapeak_debug/` whenever parsing fails so selectors can be tuned without re-running the full pipeline.
+
 ## Out of scope (for now)
 
-- PriceCharting and Pokedata.io integrations
-- CardMarket (US-focused for the time being)
+- PriceCharting and Pokedata.io paid tiers (data-license / commercial-use restrictions)
+- PWCC / Fanatics Collect, Goldin, Heritage, REA scraping (TOS-prohibited)
 - Condition assessment beyond a rough NM/LP/MP guess
 - Direct API push to marketplaces — CSV upload only

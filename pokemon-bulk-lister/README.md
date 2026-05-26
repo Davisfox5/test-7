@@ -35,6 +35,27 @@ cp .env.example .env
 # edit .env, fill in the credentials below
 ```
 
+## Web UI (recommended)
+
+A single-page Flask app on top of a local SQLite DB. Upload grids, edit
+identifications, run pricing, and export CSVs from one browser tab.
+
+```bash
+python -m webapp.app
+# http://localhost:5050
+```
+
+Data lives at `output/db.sqlite` (auto-created; auto-imports any existing
+`output/cards.json` / `output/cards_priced.json` on first launch). Drop binder
+photos into the drop-zone — they're split into crops automatically and inserted
+as empty card rows. Edit identification fields inline or paste a JSON list of
+identifications in bulk (handy for dropping in the answers Claude gives you in
+chat). Per-card "Price" runs the eBay + TCGplayer + Cardmarket pipeline; the
+"Run pricing (all)" button kicks it off as a background job with a progress bar.
+
+The CLI scripts below still work — they read/write the same `output/` files —
+so you can mix and match.
+
 ## Credentials
 
 ### Cloudinary

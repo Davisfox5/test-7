@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pokémon bulk lister</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <header>
+    <h1>Pokémon bulk lister</h1>
+    <div id="stats" class="stats"></div>
+  </header>
+
+  <section class="panel" id="upload-panel">
+    <div id="dropzone" class="dropzone">
+      <p><strong>Drop binder-page photos here</strong> or click to choose files.</p>
+      <p class="muted">Each grid is auto-split into 9 crops. Empty pockets are skipped.</p>
+      <input id="file-input" type="file" multiple accept="image/*" hidden />
+    </div>
+    <div id="upload-status" class="muted"></div>
+  </section>
+
+  <section class="panel toolbar">
+    <div class="toolbar-left">
+      <label>Sort:
+        <select id="sort">
+          <option value="confidence_asc">Confidence (lowest first)</option>
+          <option value="confidence_desc">Confidence (highest first)</option>
+          <option value="price_desc">Price (highest first)</option>
+          <option value="price_asc">Price (lowest first)</option>
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="filter-review" /> Review only</label>
+      <label><input type="checkbox" id="filter-unid" /> Unidentified only</label>
+    </div>
+    <div class="toolbar-right">
+      <button id="bulk-paste-btn">Paste IDs (JSON)</button>
+      <button id="run-pricing-btn">Run pricing (all)</button>
+      <button id="export-csv-btn">Export CSVs</button>
+    </div>
+  </section>
+
+  <section id="job-bar" class="panel job-bar hidden">
+    <div class="job-message">Pricing…</div>
+    <div class="progress"><div id="progress-fill" class="progress-fill"></div></div>
+  </section>
+
+  <section class="panel">
+    <table id="cards-table">
+      <thead>
+        <tr>
+          <th>Crop</th>
+          <th>Identified</th>
+          <th>Set / # / Rarity</th>
+          <th>TCG</th>
+          <th>CM</th>
+          <th>eBay med</th>
+          <th>eBay max</th>
+          <th>Final</th>
+          <th>Conf.</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="cards-body"><tr><td colspan="10" class="muted">Loading…</td></tr></tbody>
+    </table>
+  </section>
+
+  <!-- Edit modal -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-card">
+      <header>
+        <h2 id="modal-title">Edit card</h2>
+        <button id="modal-close">×</button>
+      </header>
+      <div class="modal-body">
+        <img id="modal-img" alt="" />
+        <form id="edit-form">
+          <input type="hidden" name="id" />
+          <label>Name <input name="name" /></label>
+          <label>Set name <input name="set_name" /></label>
+          <label>Set code <input name="set_code" placeholder="e.g. base1" /></label>
+          <label>Card number <input name="card_number" /></label>
+          <label>Rarity <input name="rarity" /></label>
+          <label>Condition
+            <select name="condition_guess">
+              <option value="">—</option>
+              <option>NM</option>
+              <option>LP</option>
+              <option>MP</option>
+              <option>HP</option>
+              <option>DMG</option>
+            </select>
+          </label>
+          <label class="checkbox"><input type="checkbox" name="is_holo" /> Holo</label>
+          <label>ID confidence <input type="number" step="0.05" min="0" max="1" name="id_confidence" /></label>
+          <div class="prices-grid" id="modal-prices"></div>
+          <div class="actions">
+            <button type="submit">Save</button>
+            <button type="button" id="modal-price-btn">Save + price now</button>
+            <button type="button" id="modal-upload-btn">Push to Cloudinary</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bulk JSON paste modal -->
+  <div id="bulk-modal" class="modal hidden">
+    <div class="modal-card">
+      <header>
+        <h2>Bulk identifications (JSON)</h2>
+        <button id="bulk-modal-close">×</button>
+      </header>
+      <div class="modal-body">
+        <p class="muted">Paste a JSON list. Each entry must have <code>crop_path</code> plus any fields to set.</p>
+        <pre class="muted small">[
+  {"crop_path": "output/crops/page01_r0c0.jpg",
+   "name": "Charizard", "set_name": "Base Set", "set_code": "base1",
+   "card_number": "4", "rarity": "Holo Rare", "is_holo": true,
+   "condition_guess": "NM", "id_confidence": 0.9}
+]</pre>
+        <textarea id="bulk-json" rows="14"></textarea>
+        <div class="actions">
+          <button id="bulk-apply">Apply</button>
+          <div id="bulk-status" class="muted"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

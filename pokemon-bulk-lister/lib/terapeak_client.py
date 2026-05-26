@@ -44,13 +44,10 @@ except ImportError as exc:  # pragma: no cover
 
 
 TERAPEAK_URL = "https://www.ebay.com/sh/research"
-LOGIN_PROMPT = (
-    "\n=== Terapeak first-run login ===\n"
-    "1. A Chromium window has opened.\n"
-    "2. Sign in to eBay and confirm you can reach Seller Hub -> Research.\n"
-    "3. Once Terapeak Research loads, return here and press Enter.\n"
-    "4. Your session will be saved for headless reuse.\n"
-)
+
+
+class TerapeakNotLoggedIn(RuntimeError):
+    """Raised when no Terapeak session is on disk. Run the setup script."""
 
 
 class TerapeakClient:
@@ -127,27 +124,18 @@ class TerapeakClient:
         return self._browser.new_context(**kwargs)
 
     # ------------------------------------------------------------------
-    # Login (one-time)
+    # Login state check (no auto-login — that needs a real terminal)
     # ------------------------------------------------------------------
 
     def _ensure_logged_in(self) -> None:
         if self.state_path.exists():
             return
-        # Headful login dance
-        pw = sync_playwright().start()
-        browser = pw.chromium.launch(headless=False)
-        context = browser.new_context()
-        page = context.new_page()
-        page.goto("https://www.ebay.com/signin/", wait_until="domcontentloaded")
-        print(LOGIN_PROMPT)
-        try:
-            input("Press Enter once you're signed in and on Terapeak Research... ")
-        except EOFError:
-            pass
-        context.storage_state(path=str(self.state_path))
-        browser.close()
-        pw.stop()
-        print(f"Saved Terapeak session to {self.state_path}")
+        raise TerapeakNotLoggedIn(
+            f"No Terapeak session at {self.state_path}. "
+            "Run from your terminal:\n"
+            "    python -m webapp.setup_terapeak\n"
+            "A Chromium window will open; sign in to eBay and the script will save the session automatically."
+        )
 
     # ------------------------------------------------------------------
     # Search

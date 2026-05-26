@@ -306,8 +306,16 @@ def api_run_pricing_all():
         try:
             if use_terapeak:
                 _job_state["message"] = "starting Terapeak browser…"
-                from lib.terapeak_client import TerapeakClient  # local import
-                terapeak = TerapeakClient()
+                from lib.terapeak_client import TerapeakClient, TerapeakNotLoggedIn  # local import
+                try:
+                    terapeak = TerapeakClient()
+                except TerapeakNotLoggedIn as exc:
+                    _job_state["message"] = (
+                        "Terapeak not set up. Run from a terminal: "
+                        "python -m webapp.setup_terapeak"
+                    )
+                    print(f"[terapeak] {exc}", file=sys.stderr)
+                    return
             with db.connect(DB_PATH) as conn:
                 cards = db.list_cards(conn, sort="newest")
             targets = [c for c in cards if c.get("name")]

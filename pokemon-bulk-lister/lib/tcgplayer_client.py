@@ -19,19 +19,38 @@ class TCGPlayerClient:
     def __init__(self, api_key: Optional[str] = None, timeout: int = 15) -> None:
         self.api_key = api_key or os.getenv("POKEMONTCG_API_KEY") or ""
         self.timeout = timeout
-        self._session = requests.Session()
+        self._session = self._new_session()
+
+    def _new_session(self) -> requests.Session:
+        s = requests.Session()
+        # Disable keep-alive so a flaky upstream can't poison a long-lived
+        # pooled connection. pokemontcg.io occasionally drops idle conns
+        # silently which surfaces as Read timeouts on the next request.
+        s.headers.update({"Connection": "close"})
         if self.api_key:
-            self._session.headers.update({"X-Api-Key": self.api_key})
+            s.headers.update({"X-Api-Key": self.api_key})
+        return s
 
     def _get(self, path: str, params: dict) -> dict:
         url = f"{BASE_URL}{path}"
+        last_exc: Optional[Exception] = None
         for attempt in range(3):
-            resp = self._session.get(url, params=params, timeout=self.timeout)
+            try:
+                resp = self._session.get(url, params=params, timeout=self.timeout)
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                # Recycle the session and back off — typical recovery for
+                # silently-dropped keepalive connections.
+                last_exc = exc
+                self._session = self._new_session()
+                time.sleep(1 + attempt)
+                continue
             if resp.status_code == 429:
                 time.sleep(2 ** attempt)
                 continue
             resp.raise_for_status()
             return resp.json()
+        if last_exc is not None:
+            raise last_exc
         resp.raise_for_status()
         return {}
 

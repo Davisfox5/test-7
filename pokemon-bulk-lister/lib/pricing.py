@@ -8,7 +8,17 @@ from typing import Optional
 
 OUTLIER_MULTIPLIER = 2.5
 LOW_CONFIDENCE_THRESHOLD = 0.6
-TIGHT_SPREAD_RATIO = 0.20
+
+# Confidence considers BOTH relative spread (%) and absolute spread ($) between
+# sources. Either signal can trigger high confidence (e.g. a $0.20 disagreement
+# on a $0.10 card is 200% but is just noise — full confidence). Either signal
+# can also reduce confidence (e.g. a 5% disagreement on a $1000 card is $50,
+# which is real money — partial confidence).
+TIGHT_SPREAD_RATIO = 0.20         # ≤ this % spread = "tight" on the relative axis
+WIDE_SPREAD_RATIO = 1.20          # ≥ this % spread = "max uncertain" on the relative axis
+ABSOLUTE_NOISE_FLOOR_USD = 2.00   # ≤ this $ spread = noise, ignore percentage entirely
+ABSOLUTE_REVIEW_USD = 25.00       # ≤ this $ spread = no penalty from the absolute axis
+ABSOLUTE_HIGH_USD = 100.00        # ≥ this $ spread = "max uncertain" on the absolute axis
 
 
 @dataclass
@@ -97,9 +107,21 @@ def aggregate(
 
 
 def _confidence(values: list[float]) -> float:
-    """1.0 if all sources within 20% of each other; decreasing as spread widens.
+    """Confidence considers both relative spread (%) and absolute spread ($).
 
-    Single-source falls back to 0.5 (we have a number but nothing to corroborate it).
+    Decision flow:
+      * 0 sources → 0.0
+      * 1 source  → 0.5 (we have a number but nothing to corroborate)
+      * Absolute spread ≤ $ABSOLUTE_NOISE_FLOOR_USD → 1.0 (cheap-card noise)
+      * Otherwise: take the LOWER of the relative-axis confidence and the
+        absolute-axis confidence — i.e. both axes have to look OK for us to
+        report high confidence on an actionable price.
+
+    Examples ($/conf):
+      0.10 vs 0.30 (rel 200%, abs $0.20)  → noise floor → 1.00
+      9.71 vs 14.83 (rel 53%, abs $5)     → rel 0.67, abs 1.00 → 0.67
+      240   vs 280   (rel 17%, abs $40)   → rel 1.00, abs 0.80 → 0.80
+      1200  vs 1260  (rel 5%,  abs $60)   → rel 1.00, abs 0.53 → 0.53
     """
     if len(values) == 0:
         return 0.0
@@ -109,10 +131,23 @@ def _confidence(values: list[float]) -> float:
     lo, hi = min(values), max(values)
     if lo <= 0:
         return 0.0
-    spread = (hi - lo) / lo
 
-    if spread <= TIGHT_SPREAD_RATIO:
+    abs_spread = hi - lo
+    if abs_spread <= ABSOLUTE_NOISE_FLOOR_USD:
         return 1.0
-    # Linearly decay: spread 0.2 -> 1.0, spread 1.2 -> 0.0.
-    decayed = 1.0 - (spread - TIGHT_SPREAD_RATIO) / 1.0
-    return max(0.0, min(1.0, decayed))
+
+    rel_spread = abs_spread / lo
+
+    # Relative-axis confidence: 1.0 ≤ tight ratio, linearly decays to 0.0 by wide ratio.
+    if rel_spread <= TIGHT_SPREAD_RATIO:
+        rel_conf = 1.0
+    else:
+        rel_conf = 1.0 - (rel_spread - TIGHT_SPREAD_RATIO) / (WIDE_SPREAD_RATIO - TIGHT_SPREAD_RATIO)
+
+    # Absolute-axis confidence: 1.0 ≤ review threshold, decays to 0.0 by high threshold.
+    if abs_spread <= ABSOLUTE_REVIEW_USD:
+        abs_conf = 1.0
+    else:
+        abs_conf = 1.0 - (abs_spread - ABSOLUTE_REVIEW_USD) / (ABSOLUTE_HIGH_USD - ABSOLUTE_REVIEW_USD)
+
+    return max(0.0, min(1.0, min(rel_conf, abs_conf)))

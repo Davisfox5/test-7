@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 from typing import Any, Optional
@@ -363,13 +364,44 @@ def _price_card(card: dict, terapeak=None) -> dict:
     card_number = card.get("card_number") or None
     is_holo = bool(card.get("is_holo"))
 
-    prices = tcg.lookup_prices(
-        name=name, set_name=set_name, set_code=set_code,
-        card_number=card_number, is_holo=is_holo,
-    )
-    tcg_price = prices.get("tcgplayer_market_usd")
-    cm_eur = prices.get("cardmarket_trend_eur")
-    tcg_card = prices.get("card")
+    tcg_price: Optional[float] = None
+    cm_eur: Optional[float] = None
+    tcg_card: Optional[dict] = None
+    tcg_error: Optional[str] = None
+    # Try the most specific query first; if it 404s or returns nothing,
+    # progressively drop fields. pokemontcg.io has been observed 404-ing
+    # narrow queries under load.
+    attempts: list[dict] = [
+        {"set_code": set_code, "card_number": card_number},
+        {"set_code": set_code, "card_number": None},
+        {"set_code": None, "card_number": card_number},
+        {"set_code": None, "card_number": None},
+    ]
+    # De-duplicate while preserving order.
+    seen: set = set()
+    for kwargs in attempts:
+        key = (kwargs.get("set_code"), kwargs.get("card_number"))
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            prices = tcg.lookup_prices(
+                name=name,
+                set_name=set_name,
+                set_code=kwargs.get("set_code"),
+                card_number=kwargs.get("card_number"),
+                is_holo=is_holo,
+            )
+            if prices.get("card") is not None:
+                tcg_price = prices.get("tcgplayer_market_usd")
+                cm_eur = prices.get("cardmarket_trend_eur")
+                tcg_card = prices.get("card")
+                tcg_error = None
+                break
+        except Exception as exc:
+            tcg_error = str(exc)
+            # brief backoff before next attempt
+            time.sleep(0.6)
     cm_usd = round(cm_eur * EUR_USD_RATE, 2) if cm_eur else None
 
     ebay_stats: dict[str, Any] = {"median": None, "max": None, "count": 0}
@@ -408,7 +440,10 @@ def _price_card(card: dict, terapeak=None) -> dict:
         "pricing_confidence": result.confidence,
         "outlier_flag": result.outlier_flag,
         "needs_review": result.needs_review,
-        "pricing_notes": result.notes,
+        "pricing_notes": (
+            f"{(result.notes + '; ') if result.notes else ''}tcg lookup: {tcg_error}"
+            if tcg_error and tcg_card is None else result.notes
+        ),
     }
     if tcg_card is not None:
         patch["tcgplayer_product_id"] = tcg_card.get("id")
@@ -496,6 +531,7 @@ def api_upload_card_image(card_id: int):
 # ----------------------------------------------------------------------
 
 @app.route("/crops/<path:filename>")
+@app.route("/output/crops/<path:filename>")
 def serve_crop(filename: str):
     return send_from_directory(CROPS_DIR, filename)
 

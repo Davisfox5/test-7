@@ -41,14 +41,39 @@ def main() -> int:
     print("4. You can also press Ctrl-C here to abort.")
     print()
 
+    debug_dir = Path("output/cache/terapeak_setup_debug")
+    debug_dir.mkdir(parents=True, exist_ok=True)
+
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False)
+        # Anti-bot flags: hide Playwright's automation fingerprint so eBay's
+        # splashui/captcha doesn't lock us into an un-solvable challenge.
+        browser = pw.chromium.launch(
+            headless=False,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--no-default-browser-check",
+                "--no-first-run",
+            ],
+            # ignore_default_args=["--enable-automation"] would also help but
+            # we need it carefully; instead we patch the webdriver flag below.
+            ignore_default_args=["--enable-automation"],
+        )
         context = browser.new_context(
             viewport={"width": 1440, "height": 900},
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.7632.6 Safari/537.36"
             ),
+            locale="en-US",
+            timezone_id="America/Los_Angeles",
+        )
+        # Mask navigator.webdriver and other obvious tells.
+        context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            "Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});"
+            "Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});"
+            "window.chrome = {runtime: {}};"
         )
         page = context.new_page()
         try:
@@ -59,24 +84,39 @@ def main() -> int:
 
         start = time.time()
         last_url = None
+        last_shot = 0.0
         while True:
             try:
                 url = page.url
             except Exception:
-                # Page got closed; the user shut the window.
                 print("Browser window closed before login completed. Nothing was saved.")
                 return 1
             if url != last_url:
-                print(f"   on: {url}")
+                print(f"   on: {url}", flush=True)
                 last_url = url
+                # Snap a screenshot any time the URL changes so we can see
+                # captchas / error pages from outside the browser.
+                try:
+                    ts = int(time.time())
+                    page.screenshot(path=str(debug_dir / f"{ts}.png"), full_page=False)
+                except Exception:
+                    pass
+                last_shot = time.time()
+            # Also snap one every 15s even if URL is stable (captcha shifts).
+            if time.time() - last_shot > 15:
+                try:
+                    ts = int(time.time())
+                    page.screenshot(path=str(debug_dir / f"{ts}-poll.png"), full_page=False)
+                except Exception:
+                    pass
+                last_shot = time.time()
             if SUCCESS_TOKEN in url:
-                # Wait a beat for any async cookies to settle, then save.
                 time.sleep(2)
                 break
             elapsed = time.time() - start
             if elapsed > TIMEOUT_SECONDS:
-                print(f"Still not at Seller Hub Research after {TIMEOUT_SECONDS}s. Keeping browser open; press Ctrl-C to abort.")
-                start = time.time()  # reset so we don't spam this message
+                print(f"Still not at Seller Hub Research after {TIMEOUT_SECONDS}s. Keeping browser open; press Ctrl-C to abort.", flush=True)
+                start = time.time()
             time.sleep(1)
 
         context.storage_state(path=str(state_path))

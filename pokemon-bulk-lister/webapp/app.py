@@ -250,7 +250,8 @@ def _split_and_record(sg, grid_path: Path) -> int:
     if img is None:
         return 0
     img = sg.auto_orient(img)
-    cells = sg.split_grid(img)
+    cells, method = sg.split_page(img)
+    print(f"[split] {grid_path.name}: {sum(1 for c in cells if c is not None)} crops via {method}", file=sys.stderr)
 
     stem = grid_path.stem
     written = 0

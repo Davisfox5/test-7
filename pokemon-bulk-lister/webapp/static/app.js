@@ -254,31 +254,6 @@ function setupModal() {
   $("#modal-upload-btn").addEventListener("click", uploadCloudinary);
 }
 
-// ---------------------------------------------------------------- bulk
-function setupBulk() {
-  $("#bulk-paste-btn").addEventListener("click", () => $("#bulk-modal").classList.remove("hidden"));
-  $("#bulk-modal-close").addEventListener("click", () => $("#bulk-modal").classList.add("hidden"));
-  $("#bulk-apply").addEventListener("click", async () => {
-    const status = $("#bulk-status");
-    let body;
-    try {
-      body = JSON.parse($("#bulk-json").value);
-      if (!Array.isArray(body)) throw new Error("must be a JSON array");
-    } catch (err) {
-      status.textContent = `Invalid JSON: ${err.message}`;
-      return;
-    }
-    status.textContent = "Applying…";
-    try {
-      const data = await api("/api/cards/bulk", { method: "POST", body: JSON.stringify(body) });
-      status.textContent = `Applied to ${data.applied} card(s).`;
-      await loadCards();
-    } catch (err) {
-      status.textContent = err.message;
-    }
-  });
-}
-
 // ---------------------------------------------------------------- toolbar
 function setupToolbar() {
   $("#sort").addEventListener("change", e => { state.sort = e.target.value; loadCards(); });
@@ -353,7 +328,6 @@ function setupKeyboard() {
   document.addEventListener("keydown", ev => {
     if (ev.key === "Escape") {
       closeEdit();
-      $("#bulk-modal").classList.add("hidden");
     }
   });
 }
@@ -361,7 +335,6 @@ function setupKeyboard() {
 setupDropzone();
 setupTable();
 setupModal();
-setupBulk();
 setupToolbar();
 setupKeyboard();
 loadCards();

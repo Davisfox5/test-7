@@ -41,7 +41,6 @@
         <input type="checkbox" id="use-terapeak" />
         Use Terapeak <span class="muted small" id="terapeak-status">(checking…)</span>
       </label>
-      <button id="bulk-paste-btn">Paste IDs (JSON)</button>
       <button id="run-pricing-btn">Run pricing (all)</button>
       <button id="export-csv-btn">Export CSVs</button>
     </div>
@@ -110,29 +109,6 @@
     </div>
   </div>
 
-  <!-- Bulk JSON paste modal -->
-  <div id="bulk-modal" class="modal hidden">
-    <div class="modal-card">
-      <header>
-        <h2>Bulk identifications (JSON)</h2>
-        <button id="bulk-modal-close">×</button>
-      </header>
-      <div class="modal-body">
-        <p class="muted">Paste a JSON list. Each entry must have <code>crop_path</code> plus any fields to set.</p>
-        <pre class="muted small">[
-  {"crop_path": "output/crops/page01_r0c0.jpg",
-   "name": "Charizard", "set_name": "Base Set", "set_code": "base1",
-   "card_number": "4", "rarity": "Holo Rare", "is_holo": true,
-   "condition_guess": "NM", "id_confidence": 0.9}
-]</pre>
-        <textarea id="bulk-json" rows="14"></textarea>
-        <div class="actions">
-          <button id="bulk-apply">Apply</button>
-          <div id="bulk-status" class="muted"></div>
-        </div>
-      </div>
-    </div>
-  </div>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>

@@ -95,6 +95,21 @@ def whatnot_rows(cards: list[dict]) -> list[dict]:
     return rows
 
 
+def _ebay_package(c: dict) -> dict:
+    if c.get("is_bulk"):
+        oz = int(c.get("bulk_weight_oz", 8))
+        return {
+            "Weight major": str(oz // 16),
+            "Weight minor": str(oz % 16),
+            "Package type": "Package",
+        }
+    return {
+        "Weight major": "0",
+        "Weight minor": "1",
+        "Package type": "PackageThickEnvelope",
+    }
+
+
 def ebay_rows(cards: list[dict]) -> list[dict]:
     """eBay Seller Hub bulk CSV (Action / Custom label / Category ID / ...).
 
@@ -127,9 +142,7 @@ def ebay_rows(cards: list[dict]) -> list[dict]:
                 "C:Country/Region of Manufacture": "United States",
                 "Shipping type": "Calculated",
                 "Shipping service 1 option": "USPSGroundAdvantage",
-                "Weight major": "0",
-                "Weight minor": "1",
-                "Package type": "PackageThickEnvelope",
+                **_ebay_package(c),
                 "Dispatch time max": "1",
                 "Returns accepted option": "ReturnsAccepted",
                 "Returns within option": "Days_30",
@@ -154,10 +167,10 @@ def _description(c: dict) -> str:
     if c.get("is_holo"):
         bits.append("Holo")
     bits.append(f"in {_condition_full(c.get('condition_guess', 'NM'))} condition.")
-    bits.append(
-        "English. Single cards ship in a hard case; "
-        "combined multi-card orders ship boxed."
-    )
+    if c.get("is_bulk"):
+        bits.append("English. Bulk lot — ships boxed, no sleeves.")
+    else:
+        bits.append("English. Ships in a hard case.")
     return " ".join(bits)
 
 

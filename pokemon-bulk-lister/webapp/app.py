@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Optional
 
@@ -303,39 +304,160 @@ def api_run_pricing_all():
             message="starting…", terapeak=bool(use_terapeak),
         )
 
+    n_terapeak_workers = int(os.getenv("TERAPEAK_WORKERS", "4"))
+    n_tcg_workers = int(os.getenv("TCG_WORKERS", "6"))
+
     def worker():
-        terapeak = None
+        # Local copy so we can flip it on import error without touching the closure.
+        terapeak_on = use_terapeak
+        pool = None
+        terapeak_thread = None
+        # Resolved pokemontcg.io card objects, keyed by card_id. Filled during
+        # Pass 1, read by Pass 2 to build Terapeak queries — saves 153
+        # redundant API calls.
+        resolved_cards: dict[int, dict] = {}
+        resolved_lock = threading.Lock()
+        pass1_progress = [0]
+        pass2_progress = [0]
+
         try:
-            if use_terapeak:
-                _job_state["message"] = "starting Terapeak browser…"
-                from lib.terapeak_client import TerapeakClient, TerapeakNotLoggedIn  # local import
-                try:
-                    terapeak = TerapeakClient()
-                except TerapeakNotLoggedIn as exc:
-                    _job_state["message"] = (
-                        "Terapeak not set up. Run from a terminal: "
-                        "python -m webapp.setup_terapeak"
-                    )
-                    print(f"[terapeak] {exc}", file=sys.stderr)
-                    return
             with db.connect(DB_PATH) as conn:
                 cards = db.list_cards(conn, sort="newest")
             targets = [c for c in cards if c.get("name")]
-            _job_state["total"] = len(targets)
-            for i, card in enumerate(targets, 1):
-                _job_state["progress"] = i
-                _job_state["message"] = f"{card.get('name')} ({i}/{len(targets)})"
+            total_units = len(targets) * (2 if terapeak_on else 1)
+            _job_state["total"] = total_units
+
+            # ---- Pass 2 (Terapeak) starts CONCURRENTLY with Pass 1. ----
+            # Pass 2 queries depend on resolved set-names from Pass 1, so we
+            # gate each Terapeak submission on its card's Pass-1 completion.
+            terapeak_ready = None  # unused
+            terapeak_queries_ready: dict[int, str] = {}  # card_id -> query string
+            queries_lock = threading.Lock()
+
+            def update_message():
+                p1 = pass1_progress[0]
+                p2 = pass2_progress[0]
+                if terapeak_on:
+                    _job_state["progress"] = p1 + p2
+                    _job_state["message"] = f"TCG/CM {p1}/{len(targets)} · Terapeak {p2}/{len(targets)}"
+                else:
+                    _job_state["progress"] = p1
+                    _job_state["message"] = f"TCG/CM {p1}/{len(targets)}"
+
+            def price_one_pass1(card: dict) -> None:
+                """TCG + CM + eBay-MI for one card."""
                 try:
-                    patch = _price_card(card, terapeak=terapeak)
+                    patch, tcg_card = _price_card_pass1(card)
+                    if tcg_card is not None:
+                        with resolved_lock:
+                            resolved_cards[int(card["id"])] = tcg_card
                     with db.connect(DB_PATH) as conn:
                         db.update_card(conn, int(card["id"]), patch)
+                    # Build the Terapeak query immediately so Pass 2 can drain.
+                    if terapeak_on:
+                        set_name = ((tcg_card or {}).get("set") or {}).get("name") or card.get("set_name") or ""
+                        bits = [card.get("name") or "", set_name, card.get("card_number") or "", "pokemon"]
+                        query = " ".join(b for b in bits if b)
+                        with queries_lock:
+                            terapeak_queries_ready[int(card["id"])] = query
                 except Exception as exc:
-                    print(f"[pricing] {card.get('name')}: {exc}", file=sys.stderr)
+                    print(f"[pricing pass1] {card.get('name')}: {exc}", file=sys.stderr)
+                finally:
+                    pass1_progress[0] += 1
+                    update_message()
+
+            # Spin Pass 1 across n_tcg_workers threads.
+            pass1_executor = ThreadPoolExecutor(max_workers=n_tcg_workers)
+            pass1_futures = [pass1_executor.submit(price_one_pass1, c) for c in targets]
+
+            # ---- Pass 2: Terapeak in parallel via TerapeakPool. ----
+            if terapeak_on:
+                try:
+                    from lib.terapeak_pool import TerapeakPool
+                    from lib.terapeak_client import TerapeakNotLoggedIn
+                except ImportError as exc:
+                    _job_state["message"] = f"terapeak import failed: {exc}"
+                    terapeak_on = False
+                else:
+                    pool = TerapeakPool(n_workers=n_terapeak_workers)
+
+                    def on_terapeak(card_id: int, res):
+                        if isinstance(res, Exception):
+                            print(f"[terapeak] id={card_id}: {res}", file=sys.stderr)
+                        else:
+                            tp_med = res.get("median")
+                            tp_count = res.get("count", 0)
+                            try:
+                                with db.connect(DB_PATH) as conn:
+                                    row = db.get_card(conn, card_id) or {}
+                                result = aggregate(
+                                    tcgplayer_market=row.get("tcgplayer_market"),
+                                    ebay_median_30d=row.get("ebay_median_30d"),
+                                    ebay_max_30d=row.get("ebay_max_30d"),
+                                    cardmarket_trend_usd=row.get("cardmarket_trend_usd"),
+                                    terapeak_median_usd=tp_med,
+                                )
+                                patch = {
+                                    "terapeak_median_usd": tp_med,
+                                    "terapeak_sold_count_365d": tp_count,
+                                    "final_price": result.price,
+                                    "pricing_confidence": result.confidence,
+                                    "outlier_flag": result.outlier_flag,
+                                    "needs_review": result.needs_review,
+                                    "pricing_notes": result.notes or row.get("pricing_notes"),
+                                }
+                                with db.connect(DB_PATH) as conn:
+                                    db.update_card(conn, card_id, patch)
+                            except Exception as exc:
+                                print(f"[terapeak merge] id={card_id}: {exc}", file=sys.stderr)
+                        pass2_progress[0] += 1
+                        update_message()
+
+                    def drain_terapeak():
+                        """Wait for each card's Pass-1 query string, submit to pool, attach callback."""
+                        submitted: set[int] = set()
+                        futures = {}
+                        while len(submitted) < len(targets):
+                            # find ready queries that haven't been submitted yet
+                            with queries_lock:
+                                ready = [
+                                    (cid, q) for cid, q in terapeak_queries_ready.items()
+                                    if cid not in submitted
+                                ]
+                            for cid, q in ready:
+                                submitted.add(cid)
+                                fut = pool.submit(q, 365)
+                                futures[fut] = cid
+                            if not ready:
+                                time.sleep(0.2)
+                        for fut in as_completed(list(futures.keys())):
+                            cid = futures[fut]
+                            try:
+                                res = fut.result()
+                            except Exception as exc:
+                                res = exc
+                            on_terapeak(cid, res)
+
+                    terapeak_thread = threading.Thread(target=drain_terapeak, daemon=True)
+                    terapeak_thread.start()
+
+            # Wait for Pass 1 to complete
+            for f in pass1_futures:
+                try:
+                    f.result()
+                except Exception:
+                    pass
+            pass1_executor.shutdown(wait=False)
+
+            # Wait for Terapeak drain to finish
+            if terapeak_thread is not None:
+                terapeak_thread.join()
+
             _job_state["message"] = "done"
         finally:
-            if terapeak is not None:
+            if pool is not None:
                 try:
-                    terapeak.close()
+                    pool.close()
                 except Exception:
                     pass
             _job_state["running"] = False
@@ -355,7 +477,12 @@ def api_pricing_status():
     return jsonify(_job_state)
 
 
-def _price_card(card: dict, terapeak=None) -> dict:
+def _price_card_pass1(card: dict) -> tuple[dict, Optional[dict]]:
+    """Pass-1 pricing wrapper: returns (patch, resolved_card)."""
+    return _price_card(card, terapeak=None, return_card=True)
+
+
+def _price_card(card: dict, terapeak=None, return_card: bool = False):
     tcg = get_tcg()
     ebay = get_ebay()
 
@@ -487,6 +614,8 @@ def _price_card(card: dict, terapeak=None) -> dict:
         patch["tcgplayer_product_id"] = tcg_card.get("id")
         patch["tcgplayer_url"] = (tcg_card.get("tcgplayer") or {}).get("url")
         patch["cardmarket_url"] = (tcg_card.get("cardmarket") or {}).get("url")
+    if return_card:
+        return patch, tcg_card
     return patch
 
 

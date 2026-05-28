@@ -84,7 +84,19 @@ class TerapeakClient:
         if self._pw is not None:
             return
         self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(headless=self.headless)
+        # Stealth flags MUST match setup_terapeak.py — without these, eBay's
+        # bot detector flags `navigator.webdriver` and serves splashui/captcha
+        # on every request, invalidating the saved session after a few hits.
+        self._browser = self._pw.chromium.launch(
+            headless=self.headless,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--no-default-browser-check",
+                "--no-first-run",
+            ],
+            ignore_default_args=["--enable-automation"],
+        )
 
     def close(self) -> None:
         if self._browser is not None:
@@ -111,17 +123,28 @@ class TerapeakClient:
         self._start_browser()
         assert self._browser is not None
         kwargs: dict = {
-            "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+            "user_agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.7632.6 Safari/537.36"
+            ),
             "viewport": {"width": 1440, "height": 900},
             "locale": "en-US",
+            "timezone_id": "America/Los_Angeles",
         }
         if self.state_path.exists():
             kwargs["storage_state"] = str(self.state_path)
         proxy = self._next_proxy()
         if proxy:
             kwargs["proxy"] = proxy
-        return self._browser.new_context(**kwargs)
+        ctx = self._browser.new_context(**kwargs)
+        # Mask navigator.webdriver and other automation tells per-context.
+        ctx.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            "Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});"
+            "Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});"
+            "window.chrome = {runtime: {}};"
+        )
+        return ctx
 
     # ------------------------------------------------------------------
     # Login state check (no auto-login — that needs a real terminal)

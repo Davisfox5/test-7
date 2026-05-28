@@ -210,6 +210,14 @@ function closeEdit() { $("#modal").classList.add("hidden"); state.editing = null
 async function saveEdit({ priceAfter = false } = {}) {
   if (!state.editing) return;
   const form = $("#edit-form");
+  const saveBtn = form.querySelector('button[type="submit"]');
+  const priceBtn = $("#modal-price-btn");
+  const activeBtn = priceAfter ? priceBtn : saveBtn;
+  const originalLabel = activeBtn.textContent;
+  const allBtns = [saveBtn, priceBtn, $("#modal-upload-btn"), $("#modal-close")];
+  allBtns.forEach(b => b.disabled = true);
+  activeBtn.textContent = priceAfter ? "Saving…" : "Saving…";
+
   const patch = {
     name: form.name.value.trim(),
     set_name: form.set_name.value.trim(),
@@ -220,12 +228,29 @@ async function saveEdit({ priceAfter = false } = {}) {
     is_holo: form.is_holo.checked,
     id_confidence: parseFloat(form.id_confidence.value) || 0,
   };
-  await api(`/api/cards/${state.editing}`, { method: "PATCH", body: JSON.stringify(patch) });
-  if (priceAfter) {
-    await api(`/api/cards/${state.editing}/price`, { method: "POST" });
+  try {
+    await api(`/api/cards/${state.editing}`, { method: "PATCH", body: JSON.stringify(patch) });
+    if (priceAfter) {
+      activeBtn.textContent = "Pricing…";
+      const updated = await api(`/api/cards/${state.editing}/price`, { method: "POST" });
+      // Refresh the modal body with the new prices before closing.
+      const idx = state.cards.findIndex(c => c.id === updated.id);
+      if (idx >= 0) state.cards[idx] = updated;
+      activeBtn.textContent = `Priced $${(updated.final_price ?? 0).toFixed(2)}`;
+      await new Promise(r => setTimeout(r, 600));   // brief flash so user sees the new price
+    } else {
+      activeBtn.textContent = "Saved ✓";
+      await new Promise(r => setTimeout(r, 350));
+    }
+    await loadCards();
+    closeEdit();
+  } catch (err) {
+    activeBtn.textContent = originalLabel;
+    alert(`Failed: ${err.message}`);
+  } finally {
+    allBtns.forEach(b => b.disabled = false);
+    activeBtn.textContent = originalLabel;
   }
-  await loadCards();
-  closeEdit();
 }
 
 async function uploadCloudinary() {

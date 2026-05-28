@@ -22,11 +22,15 @@ class TCGPlayerClient:
         self._session = self._new_session()
 
     def _new_session(self) -> requests.Session:
+        # Keep-alive ON for speed (saves ~150ms TCP+TLS handshake per call),
+        # but recycle on the first read-timeout — pokemontcg.io's CDN
+        # occasionally serves stale pooled connections that silently hang.
         s = requests.Session()
-        # Disable keep-alive so a flaky upstream can't poison a long-lived
-        # pooled connection. pokemontcg.io occasionally drops idle conns
-        # silently which surfaces as Read timeouts on the next request.
-        s.headers.update({"Connection": "close"})
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=8, pool_maxsize=16, max_retries=0,
+        )
+        s.mount("https://", adapter)
+        s.mount("http://", adapter)
         if self.api_key:
             s.headers.update({"X-Api-Key": self.api_key})
         return s
@@ -38,11 +42,9 @@ class TCGPlayerClient:
             try:
                 resp = self._session.get(url, params=params, timeout=self.timeout)
             except (requests.ConnectionError, requests.Timeout) as exc:
-                # Recycle the session and back off — typical recovery for
-                # silently-dropped keepalive connections.
                 last_exc = exc
                 self._session = self._new_session()
-                time.sleep(1 + attempt)
+                time.sleep(0.5 + attempt * 0.5)
                 continue
             if resp.status_code == 429:
                 time.sleep(2 ** attempt)

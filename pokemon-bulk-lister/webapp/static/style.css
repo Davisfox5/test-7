@@ -102,6 +102,11 @@ td.price { font-variant-numeric: tabular-nums; }
 td.actions { white-space: nowrap; }
 td.actions button { padding: 3px 8px; font-size: 12px; }
 
+.publish-panel { display: flex; flex-direction: column; gap: 8px; }
+.publish-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.publish-row strong { margin-right: 4px; }
+.pub-status { margin-left: 4px; }
+
 .job-bar { display: flex; align-items: center; gap: 16px; }
 .job-message { flex: 0 0 auto; color: var(--muted); }
 .progress { flex: 1; height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden; }

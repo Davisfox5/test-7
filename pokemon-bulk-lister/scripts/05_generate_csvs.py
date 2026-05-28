@@ -125,8 +125,11 @@ def ebay_rows(cards: list[dict]) -> list[dict]:
                 "C:Features": "Holo" if c.get("is_holo") else "",
                 "C:Language": "English",
                 "C:Country/Region of Manufacture": "United States",
+                "Shipping type": "Calculated",
                 "Shipping service 1 option": "USPSGroundAdvantage",
-                "Shipping service 1 cost": "0.00",
+                "Weight major": "0",
+                "Weight minor": "1",
+                "Package type": "PackageThickEnvelope",
                 "Dispatch time max": "1",
                 "Returns accepted option": "ReturnsAccepted",
                 "Returns within option": "Days_30",
@@ -151,7 +154,10 @@ def _description(c: dict) -> str:
     if c.get("is_holo"):
         bits.append("Holo")
     bits.append(f"in {_condition_full(c.get('condition_guess', 'NM'))} condition.")
-    bits.append("English. Ships in a penny sleeve + toploader.")
+    bits.append(
+        "English. Single cards ship in a hard case; "
+        "combined multi-card orders ship boxed."
+    )
     return " ".join(bits)
 
 

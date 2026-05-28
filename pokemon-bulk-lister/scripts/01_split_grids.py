@@ -296,19 +296,111 @@ def warp_page(img: np.ndarray, quad: np.ndarray) -> np.ndarray:
 # Top-level
 # ---------------------------------------------------------------------------
 
+def _detect_card_in_cell(cell: np.ndarray) -> Optional[np.ndarray]:
+    """Find the actual card within a rough grid cell and return its 4 corners.
+
+    Cards inside binder pockets are often slightly tilted/shifted. This pulls
+    each card's own outline so we can warp it to a clean rectangle, instead
+    of taking a fixed grid slice that may straddle a card edge.
+    """
+    h, w = cell.shape[:2]
+    if h < 50 or w < 50:
+        return None
+    gray = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    # Try Otsu — card body is brighter than binder plastic / shadow.
+    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # Morph close to merge interior texture into one card blob.
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(5, w // 30), max(5, h // 30)))
+    closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    cell_area = h * w
+    # Pick the largest contour that's plausibly card-shaped.
+    candidates = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < cell_area * 0.25:  # cards fill at least 25% of their cell
+            continue
+        if area > cell_area * 0.98:  # too-big = likely captured borders
+            continue
+        rect = cv2.minAreaRect(cnt)
+        (_, _), (rw, rh), _ = rect
+        if min(rw, rh) <= 0:
+            continue
+        aspect = min(rw, rh) / max(rw, rh)
+        # Pokémon card aspect = 6.3 / 8.8 ≈ 0.716. Allow ±25%.
+        if not (0.55 <= aspect <= 0.95):
+            continue
+        candidates.append((area, rect))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda t: -t[0])
+    _, best = candidates[0]
+    return cv2.boxPoints(best).astype(np.float32).reshape(4, 1, 2)
+
+
+def _warp_card_quad(img: np.ndarray, quad: np.ndarray) -> np.ndarray:
+    """Perspective-warp a card quad to an upright 480×671 rectangle (6.3:8.8)."""
+    ordered = _order_corners(quad)
+    out_w = 480
+    out_h = int(out_w / CARD_ASPECT)  # 671
+    dst = np.array(
+        [[0, 0], [out_w - 1, 0], [out_w - 1, out_h - 1], [0, out_h - 1]],
+        dtype=np.float32,
+    )
+    M = cv2.getPerspectiveTransform(ordered, dst)
+    return cv2.warpPerspective(img, M, (out_w, out_h))
+
+
+def _split_with_per_card_warp(warped: np.ndarray) -> list[Optional[np.ndarray]]:
+    """Divide a warped page into 9 cells, then perspective-warp each card individually."""
+    h, w = warped.shape[:2]
+    cell_w, cell_h = w // 3, h // 3
+    # Small overlap so a card sitting on a cell boundary still gets fully captured.
+    overlap = int(min(cell_w, cell_h) * 0.05)
+    cells: list[Optional[np.ndarray]] = []
+    for r in range(3):
+        for c in range(3):
+            y0 = max(0, r * cell_h - overlap)
+            y1 = min(h, (r + 1) * cell_h + overlap)
+            x0 = max(0, c * cell_w - overlap)
+            x1 = min(w, (c + 1) * cell_w + overlap)
+            cell = warped[y0:y1, x0:x1]
+            if cell.size == 0 or cell_is_empty(cell):
+                cells.append(None)
+                continue
+            quad_local = _detect_card_in_cell(cell)
+            if quad_local is None:
+                # Fallback: just the centered rectangle (no per-card warp).
+                cells.append(cell)
+                continue
+            # Translate quad coords back into the warped-page coordinate space,
+            # then warp from the full warped page so we don't run into the
+            # cell-overlap edge.
+            quad_global = quad_local.copy()
+            quad_global[:, 0, 0] += x0
+            quad_global[:, 0, 1] += y0
+            cells.append(_warp_card_quad(warped, quad_global))
+    return cells
+
+
 def split_page(img: np.ndarray) -> tuple[list[Optional[np.ndarray]], str]:
     """Return (9 crops, method).
 
     Pipeline:
-      1) Try to find the binder page's 4 corners and perspective-warp it
-         flat. Then 3x3 grid divide the warped page. Method = 'page_warp'.
-      2) Fall back to plain 3x3 grid on the original image. Method = 'grid'.
+      1) Page corners → perspective warp the binder page to a clean rectangle.
+      2) Inside the warped page, detect each individual card's 4 corners and
+         perspective-warp THAT card to an upright 480×671 rectangle, so cards
+         tilted in their pockets still come out clean. Method = 'per_card_warp'.
+      3) Fall back to a plain 3x3 grid divide if the page can't be located.
+         Method = 'grid'.
     """
     quad = find_page_quad(img)
     if quad is not None:
         warped = warp_page(img, quad)
-        # warped image IS the page — don't re-detect a bbox on it.
-        return split_grid(warped, skip_bbox=True), "page_warp"
+        return _split_with_per_card_warp(warped), "per_card_warp"
     return split_grid(img), "grid"
 
 

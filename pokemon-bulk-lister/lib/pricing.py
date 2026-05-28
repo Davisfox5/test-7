@@ -45,14 +45,16 @@ def aggregate(
     """Aggregate prices from multiple sources.
 
     Rule:
-        prices = [all non-null source prices]
-        median = statistics.median(prices)
-        candidate = max(prices)
-        if candidate > 2.5 * median: use second-highest, flag outlier
-        else: use candidate
+      1) If TCGplayer and Cardmarket on the same matched card disagree by
+         >5x, treat the outlier as bad upstream data (pokemontcg.io often
+         reflects a different printing's price under one of the two fields).
+         Drop the smaller source and use the other — TCGplayer market is
+         usually the more trustworthy daily-updated source for US pricing.
+      2) Take the median + max of the remaining non-null prices.
+         If max > 2.5x median, use the second-highest and flag outlier.
+         Else use max.
 
-    Cardmarket trend price should already be FX-converted to USD by the caller.
-    Terapeak gives a longer (~365-day) window than the eBay 30-day stats.
+    Cardmarket trend price should already be FX-converted to USD by caller.
     """
     sources: dict[str, Optional[float]] = {
         "tcgplayer_market": tcgplayer_market,
@@ -61,6 +63,30 @@ def aggregate(
         "cardmarket_trend_usd": cardmarket_trend_usd,
         "terapeak_median_usd": terapeak_median_usd,
     }
+
+    # Bad-data correction: TCG vs Cardmarket disagreement on the SAME card.
+    # Implausible spreads here are almost always a variant-mismatch on the
+    # pokemontcg.io side, not a real market disagreement. Drop the outlier
+    # so we don't list overpriced and eat returns.
+    data_correction_note = ""
+    tcg = tcgplayer_market
+    cm = cardmarket_trend_usd
+    if tcg and cm and tcg > 0 and cm > 0:
+        ratio = max(tcg, cm) / min(tcg, cm)
+        if ratio > 5.0:
+            if cm > tcg:
+                cardmarket_trend_usd = None
+                data_correction_note = (
+                    f"Cardmarket ${cm:.2f} vs TCG ${tcg:.2f} ({ratio:.0f}x apart) — "
+                    f"dropping CM as likely variant mismatch on pokemontcg.io"
+                )
+            else:
+                tcgplayer_market = None
+                data_correction_note = (
+                    f"TCG ${tcg:.2f} vs Cardmarket ${cm:.2f} ({ratio:.0f}x apart) — "
+                    f"dropping TCG as likely variant mismatch"
+                )
+
     prices = [
         tcgplayer_market,
         ebay_median_30d,
@@ -83,13 +109,14 @@ def aggregate(
     median = statistics.median(valid)
     candidate = max(valid)
     outlier_flag = False
-    notes = ""
+    notes = data_correction_note
 
     if len(valid) >= 2 and candidate > OUTLIER_MULTIPLIER * median:
         sorted_desc = sorted(valid, reverse=True)
         price = sorted_desc[1]
         outlier_flag = True
-        notes = f"max {candidate:.2f} > {OUTLIER_MULTIPLIER}x median {median:.2f}; using second-highest"
+        extra = f"max {candidate:.2f} > {OUTLIER_MULTIPLIER}x median {median:.2f}; using second-highest"
+        notes = f"{notes}; {extra}" if notes else extra
     else:
         price = candidate
 

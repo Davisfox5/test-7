@@ -369,18 +369,18 @@ def _price_card(card: dict, terapeak=None) -> dict:
     cm_eur: Optional[float] = None
     tcg_card: Optional[dict] = None
     tcg_error: Optional[str] = None
+    match_level: Optional[str] = None  # "exact", "no_number", "no_set", "name_only"
     # Try the most specific query first; if it 404s or returns nothing,
     # progressively drop fields. pokemontcg.io has been observed 404-ing
     # narrow queries under load.
-    attempts: list[dict] = [
-        {"set_code": set_code, "card_number": card_number},
-        {"set_code": set_code, "card_number": None},
-        {"set_code": None, "card_number": card_number},
-        {"set_code": None, "card_number": None},
+    attempts: list[tuple[dict, str]] = [
+        ({"set_code": set_code, "card_number": card_number}, "exact"),
+        ({"set_code": set_code, "card_number": None},        "no_number"),
+        ({"set_code": None, "card_number": card_number},     "no_set"),
+        ({"set_code": None, "card_number": None},            "name_only"),
     ]
-    # De-duplicate while preserving order.
     seen: set = set()
-    for kwargs in attempts:
+    for kwargs, level in attempts:
         key = (kwargs.get("set_code"), kwargs.get("card_number"))
         if key in seen:
             continue
@@ -397,13 +397,33 @@ def _price_card(card: dict, terapeak=None) -> dict:
                 tcg_price = prices.get("tcgplayer_market_usd")
                 cm_eur = prices.get("cardmarket_trend_eur")
                 tcg_card = prices.get("card")
+                match_level = level
                 tcg_error = None
                 break
         except Exception as exc:
             tcg_error = str(exc)
-            # brief backoff before next attempt
             time.sleep(0.6)
     cm_usd = round(cm_eur * EUR_USD_RATE, 2) if cm_eur else None
+
+    # Accuracy guard: if the match came from a name-only fallback (set_code
+    # dropped), flag it so the user knows the match is approximate. Same if
+    # TCG and CM disagree wildly — that's a signal the matched product is
+    # not the variant the seller actually has.
+    match_warning: Optional[str] = None
+    if tcg_card is not None:
+        matched_set_id = (tcg_card.get("set") or {}).get("id", "")
+        if match_level in ("no_set", "name_only"):
+            match_warning = (
+                f"name-only match to {matched_set_id} — set_code was not provided, "
+                "match may not reflect the actual printing"
+            )
+        if tcg_price and cm_usd and tcg_price > 0 and cm_usd > 0:
+            ratio = max(tcg_price, cm_usd) / min(tcg_price, cm_usd)
+            if ratio > 3.0:
+                match_warning = (
+                    (match_warning + "; " if match_warning else "")
+                    + f"TCG/CM disagree {ratio:.1f}x on {matched_set_id} — variant mismatch?"
+                )
 
     ebay_stats: dict[str, Any] = {"median": None, "max": None, "count": 0}
     try:
@@ -428,6 +448,26 @@ def _price_card(card: dict, terapeak=None) -> dict:
         terapeak_median_usd=terapeak_stats.get("median"),
     )
 
+    # Build pricing_notes from all signals so the user has full context.
+    notes_parts = []
+    if result.notes:
+        notes_parts.append(result.notes)
+    if tcg_error and tcg_card is None:
+        notes_parts.append(f"tcg lookup: {tcg_error}")
+    if match_warning:
+        notes_parts.append(f"⚠ {match_warning}")
+    if match_level and match_level != "exact":
+        notes_parts.append(f"match: {match_level}")
+
+    # A match warning forces low confidence + review regardless of source agreement,
+    # because high source agreement on a wrong card is the worst case (looks reliable
+    # but mis-prices the listing).
+    final_conf = result.confidence
+    final_needs_review = result.needs_review
+    if match_warning:
+        final_conf = min(final_conf, 0.2)
+        final_needs_review = True
+
     patch: dict[str, Any] = {
         "tcgplayer_market": tcg_price,
         "cardmarket_trend_eur": cm_eur,
@@ -438,13 +478,10 @@ def _price_card(card: dict, terapeak=None) -> dict:
         "terapeak_median_usd": terapeak_stats.get("median"),
         "terapeak_sold_count_365d": terapeak_stats.get("count", 0),
         "final_price": result.price,
-        "pricing_confidence": result.confidence,
+        "pricing_confidence": final_conf,
         "outlier_flag": result.outlier_flag,
-        "needs_review": result.needs_review,
-        "pricing_notes": (
-            f"{(result.notes + '; ') if result.notes else ''}tcg lookup: {tcg_error}"
-            if tcg_error and tcg_card is None else result.notes
-        ),
+        "needs_review": final_needs_review,
+        "pricing_notes": "; ".join(notes_parts),
     }
     if tcg_card is not None:
         patch["tcgplayer_product_id"] = tcg_card.get("id")

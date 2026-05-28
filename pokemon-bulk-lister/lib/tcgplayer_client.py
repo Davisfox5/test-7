@@ -168,7 +168,10 @@ class TCGPlayerClient:
                 "cardmarket_trend_eur": <float or None>,
             }
         """
-        card = self.find_card(name=name, set_name=set_name, set_code=set_code, card_number=card_number)
+        card = self.find_card(
+            name=name, set_name=set_name, set_code=set_code,
+            card_number=card_number,
+        )
         if not card:
             return {"card": None, "tcgplayer_market_usd": None, "cardmarket_trend_eur": None}
         return {

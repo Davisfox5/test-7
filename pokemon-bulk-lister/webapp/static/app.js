@@ -34,6 +34,7 @@ function renderStats(stats) {
     <span><strong>${stats.priced ?? 0}</strong> priced</span>
     <span><strong>${stats.flagged ?? 0}</strong> flagged</span>
     <span><strong>${stats.uploaded ?? 0}</strong> uploaded</span>
+    <span><strong>${stats.ebay_listed ?? 0}</strong> on eBay</span>
     <span>est. value: <strong>$${(stats.total_value ?? 0).toFixed(2)}</strong></span>
   `;
 }
@@ -348,6 +349,79 @@ async function pollJob() {
   tick();
 }
 
+// ---------------------------------------------------------------- publish
+function setupPublish() {
+  const buttons = {
+    ebay: $("#publish-ebay-btn"),
+    tcgplayer: $("#publish-tcg-btn"),
+    whatnot: $("#publish-whatnot-btn"),
+  };
+
+  async function refreshStatus() {
+    let s;
+    try {
+      s = await api("/api/publish/status");
+    } catch {
+      return;
+    }
+    for (const site of ["ebay", "tcgplayer", "whatnot"]) {
+      const el = $(`#pub-${site}`);
+      const ready = s[site] && s[site].ready;
+      if (el) {
+        el.textContent = ready ? "(ready)" : "(setup needed)";
+        el.style.color = ready ? "#15803d" : "#b45309";
+        if (!ready && s[site] && s[site].reason) buttons[site].title = s[site].reason;
+      }
+    }
+  }
+
+  async function publish(site) {
+    const btn = buttons[site];
+    btn.disabled = true;
+    const endpoint = site === "ebay" ? "/api/publish/ebay" : "/api/publish/portal";
+    const opts = site === "ebay"
+      ? { method: "POST" }
+      : { method: "POST", body: JSON.stringify({ site }) };
+    try {
+      await api(endpoint, opts);
+      pollPublishJob();
+    } catch (err) {
+      alert(err.message);
+      btn.disabled = false;
+    }
+  }
+
+  Object.entries(buttons).forEach(([site, btn]) => {
+    if (btn) btn.addEventListener("click", () => publish(site));
+  });
+  refreshStatus();
+}
+
+async function pollPublishJob() {
+  const bar = $("#publish-bar");
+  const fill = $("#publish-progress-fill");
+  const msg = $("#publish-bar-msg");
+  bar.classList.remove("hidden");
+  const tick = async () => {
+    try {
+      const status = await api("/api/publish/job-status");
+      const pct = status.total ? (status.progress / status.total) * 100 : 0;
+      fill.style.width = `${pct}%`;
+      msg.textContent = `${status.site || "publish"}: ${status.message || "…"}`;
+      if (status.running) setTimeout(tick, 1500);
+      else {
+        await loadCards();
+        $("#publish-msg").textContent = status.message || "";
+        ["#publish-ebay-btn", "#publish-tcg-btn", "#publish-whatnot-btn"].forEach(s => $(s).disabled = false);
+        setTimeout(() => bar.classList.add("hidden"), 2500);
+      }
+    } catch {
+      setTimeout(tick, 2000);
+    }
+  };
+  tick();
+}
+
 // ---------------------------------------------------------------- init
 function setupKeyboard() {
   document.addEventListener("keydown", ev => {
@@ -361,5 +435,6 @@ setupDropzone();
 setupTable();
 setupModal();
 setupToolbar();
+setupPublish();
 setupKeyboard();
 loadCards();

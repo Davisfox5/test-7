@@ -23,6 +23,9 @@ output/csvs/{tcgplayer,whatnot,ebay}_*.csv
         │
         ▼  scripts/06_review_report.py
 output/review.html
+        │
+        ▼  scripts/07_publish_listings.py
+eBay live listings (Sell API) + TCGPlayer/Whatnot CSV uploads
 ```
 
 ## Setup
@@ -110,7 +113,62 @@ python scripts/05_generate_csvs.py
 
 # 6. Open output/review.html to triage low-confidence cards before upload
 python scripts/06_review_report.py
+
+# 7. Publish. eBay goes live via the official Sell API; TCGPlayer + Whatnot
+#    upload the generated CSVs through the seller portal (headless browser).
+python scripts/07_publish_listings.py --site ebay
+python scripts/07_publish_listings.py --site tcgplayer --site whatnot
+# Dry-run first to build payloads/CSVs without pushing anything:
+python scripts/07_publish_listings.py --all --dry-run
 ```
+
+## Publishing listings
+
+The three sites are not equal — only eBay exposes a usable listing API for a
+typical seller, so the publish step uses two mechanisms:
+
+### eBay — official Sell API (recommended)
+Each priced + image-uploaded card becomes a live fixed-price listing via the
+Inventory API (`inventory_item` → `offer` → `publishOffer`). No scraping.
+
+One-time setup:
+1. Create a **RuName** under developer.ebay.com → *User Tokens → Get a Token
+   from eBay via Your Application*; set its accepted redirect URL. Put the
+   RuName in `EBAY_REDIRECT_URI`.
+2. Authorize once:
+   ```bash
+   python -m webapp.setup_ebay
+   ```
+   Sign in, approve the `sell.inventory` / `sell.account` scopes, and paste the
+   redirected URL back. The refresh token is cached at `EBAY_USER_TOKEN_PATH`
+   and listing then runs headlessly until it expires (~18 months).
+3. Publishing needs payment/return/fulfillment **business policies** and an
+   inventory location. We auto-pick the account's first of each; pin specific
+   IDs with `EBAY_*_POLICY_ID` / `EBAY_MERCHANT_LOCATION_KEY` if you have
+   several. Opt into Business Policies in eBay account settings if you haven't.
+
+Listing IDs are written back to `cards_priced.json` (CLI) and the SQLite DB
+(web UI), so re-runs update existing offers rather than duplicating them.
+
+### TCGPlayer & Whatnot — headless CSV upload (⚠️ TOS-grey)
+Neither offers a public listing API to typical sellers. The supported path is
+the bulk-inventory CSV this app already generates; this step just drives the
+seller portal in a headless browser to submit it for you — the same Playwright
+pattern as the Terapeak scraper. **This is against their Terms, is fragile (DOM
+changes break it), and use is at your own risk** — keep it to a
+personal/secondary account, or just upload the CSVs by hand.
+
+```bash
+pip install playwright && playwright install chromium
+python -m webapp.setup_portal --site tcgplayer   # sign in once; session saved
+python -m webapp.setup_portal --site whatnot
+```
+
+On parse failure the uploader dumps a screenshot + HTML to
+`output/cache/<site>_debug/` and the upload URL/selectors can be overridden via
+`TCGPLAYER_UPLOAD_URL` / `WHATNOT_UPLOAD_URL` in `.env`.
+
+All of this is also wired into the web UI's **Publish** panel.
 
 ## Pricing aggregation
 
@@ -153,11 +211,17 @@ pokemon-bulk-lister/
 │  ├─ 03_enrich_pricing.py
 │  ├─ 04_upload_images.py
 │  ├─ 05_generate_csvs.py
-│  └─ 06_review_report.py
+│  ├─ 06_review_report.py
+│  └─ 07_publish_listings.py   # eBay Sell API + TCGPlayer/Whatnot CSV upload
 ├─ lib/
 │  ├─ pricing.py               # aggregation + confidence
 │  ├─ tcgplayer_client.py      # pokemontcg.io wrapper
-│  ├─ ebay_client.py           # OAuth + Browse + Marketplace Insights
+│  ├─ ebay_client.py           # OAuth client-credentials + Browse + Marketplace Insights
+│  ├─ ebay_oauth.py            # user-token OAuth (authorization-code + refresh)
+│  ├─ ebay_lister.py           # Sell Inventory API: create + publish listings
+│  ├─ portal_uploader.py       # headless-browser CSV upload base
+│  ├─ tcgplayer_lister.py      # TCGPlayer seller-portal CSV upload
+│  ├─ whatnot_lister.py        # Whatnot Seller Hub CSV upload
 │  └─ cloudinary_client.py
 ├─ input/grids/
 ├─ output/
@@ -195,4 +259,6 @@ The scraper writes screenshots + HTML to `output/cache/terapeak_debug/` whenever
 - PriceCharting and Pokedata.io paid tiers (data-license / commercial-use restrictions)
 - PWCC / Fanatics Collect, Goldin, Heritage, REA scraping (TOS-prohibited)
 - Condition assessment beyond a rough NM/LP/MP guess
-- Direct API push to marketplaces — CSV upload only
+- Direct *API* push for TCGPlayer & Whatnot — no public seller listing API, so
+  those remain CSV-based (optionally auto-submitted via headless browser, see
+  "Publishing listings"). eBay does publish directly via its Sell API.

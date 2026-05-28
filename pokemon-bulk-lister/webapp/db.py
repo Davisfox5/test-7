@@ -62,6 +62,13 @@ CREATE TABLE IF NOT EXISTS cards (
     cardmarket_url          TEXT,
     image_url               TEXT,
 
+    -- listing (eBay Sell API is per-card; TCGPlayer/Whatnot are batch CSV uploads)
+    ebay_listing_id         TEXT,
+    ebay_offer_id           TEXT,
+    ebay_listing_url        TEXT,
+    ebay_listing_status     TEXT,
+    listed_at               TEXT,
+
     created_at              TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -82,7 +89,18 @@ CARD_FIELDS = (
     "final_price", "pricing_confidence", "outlier_flag",
     "needs_review", "pricing_notes",
     "tcgplayer_product_id", "tcgplayer_url", "cardmarket_url", "image_url",
+    "ebay_listing_id", "ebay_offer_id", "ebay_listing_url", "ebay_listing_status", "listed_at",
     "created_at", "updated_at",
+)
+
+# Columns added after the original schema shipped; applied as idempotent
+# ALTER TABLEs so existing DBs migrate forward on launch.
+_MIGRATIONS = (
+    ("ebay_listing_id", "TEXT"),
+    ("ebay_offer_id", "TEXT"),
+    ("ebay_listing_url", "TEXT"),
+    ("ebay_listing_status", "TEXT"),
+    ("listed_at", "TEXT"),
 )
 
 EDITABLE_ID_FIELDS = (
@@ -107,6 +125,14 @@ def connect(db_path: str = DEFAULT_DB_PATH) -> Iterator[sqlite3.Connection]:
 def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        _apply_migrations(conn)
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(cards)").fetchall()}
+    for column, coltype in _MIGRATIONS:
+        if column not in existing:
+            conn.execute(f"ALTER TABLE cards ADD COLUMN {column} {coltype}")
 
 
 def get_or_create_grid(conn: sqlite3.Connection, filename: str, original_path: str) -> int:
@@ -206,6 +232,7 @@ def card_stats(conn: sqlite3.Connection) -> dict:
             SUM(CASE WHEN final_price IS NOT NULL THEN 1 ELSE 0 END) AS priced,
             SUM(CASE WHEN needs_review = 1 THEN 1 ELSE 0 END) AS flagged,
             SUM(CASE WHEN image_url IS NOT NULL AND image_url <> '' THEN 1 ELSE 0 END) AS uploaded,
+            SUM(CASE WHEN ebay_listing_id IS NOT NULL AND ebay_listing_id <> '' THEN 1 ELSE 0 END) AS ebay_listed,
             COALESCE(SUM(final_price), 0) AS total_value
         FROM cards
         """

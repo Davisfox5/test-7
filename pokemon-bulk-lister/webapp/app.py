@@ -96,6 +96,10 @@ _csv_gen = None
 _job_lock = threading.Lock()
 _job_state: dict[str, Any] = {"running": False, "progress": 0, "total": 0, "message": ""}
 
+# Separate slot for publish jobs so a publish run doesn't clobber pricing state.
+_publish_lock = threading.Lock()
+_publish_state: dict[str, Any] = {"running": False, "progress": 0, "total": 0, "message": "", "site": ""}
+
 
 # ----------------------------------------------------------------------
 # Bootstrap
@@ -623,15 +627,12 @@ def _price_card(card: dict, terapeak=None, return_card: bool = False):
 # Export + image upload
 # ----------------------------------------------------------------------
 
-@app.route("/api/export/csvs", methods=["POST"])
-def api_export_csvs():
-    gc = get_csv_gen()
-    with db.connect(DB_PATH) as conn:
-        cards = db.list_cards(conn, sort="newest")
-    # Coerce DB rows into the dict shape the CSV generator expects.
+def _cards_payload(cards: list[dict]) -> list[dict]:
+    """Coerce DB rows into the dict shape the CSV generator + listers expect."""
     payload = []
     for c in cards:
         payload.append({
+            "id": c["id"],
             "crop_path": c["crop_path"],
             "name": c["name"] or "",
             "set_name": c["set_name"] or "",
@@ -641,10 +642,20 @@ def api_export_csvs():
             "is_holo": bool(c["is_holo"]),
             "condition_guess": c["condition_guess"] or "",
             "price": c["final_price"],
+            "final_price": c["final_price"],
             "tcgplayer_product_id": c["tcgplayer_product_id"],
             "image_url": c["image_url"] or "",
             "confidence": c["pricing_confidence"],
         })
+    return payload
+
+
+@app.route("/api/export/csvs", methods=["POST"])
+def api_export_csvs():
+    gc = get_csv_gen()
+    with db.connect(DB_PATH) as conn:
+        cards = db.list_cards(conn, sort="newest")
+    payload = _cards_payload(cards)
 
     CSVS_DIR.mkdir(parents=True, exist_ok=True)
     written = []
@@ -691,6 +702,144 @@ def api_upload_card_image(card_id: int):
     except Exception as exc:
         traceback.print_exc()
         return jsonify({"error": str(exc)}), 500
+
+
+# ----------------------------------------------------------------------
+# Publish to marketplaces
+# ----------------------------------------------------------------------
+
+@app.route("/api/publish/status")
+def api_publish_status():
+    """Readiness probe for each site + the current publish job state."""
+    # eBay: official API — are we authorized?
+    try:
+        from lib.ebay_lister import preflight
+        ebay = preflight()
+    except Exception as exc:  # pragma: no cover - import/runtime guard
+        ebay = {"ready": False, "reason": str(exc)}
+
+    # TCGPlayer / Whatnot: headless portal upload — is a session saved?
+    def _portal_ready(env_key: str, default: str) -> dict:
+        path = ROOT / os.getenv(env_key, default)
+        return {
+            "ready": path.exists(),
+            "reason": "" if path.exists() else "no saved session — run python -m webapp.setup_portal",
+        }
+
+    return jsonify({
+        "ebay": ebay,
+        "tcgplayer": _portal_ready("TCGPLAYER_STATE_PATH", "output/cache/tcgplayer_state.json"),
+        "whatnot": _portal_ready("WHATNOT_STATE_PATH", "output/cache/whatnot_state.json"),
+        "job": _publish_state,
+    })
+
+
+@app.route("/api/publish/job-status")
+def api_publish_job_status():
+    return jsonify(_publish_state)
+
+
+@app.route("/api/publish/ebay", methods=["POST"])
+def api_publish_ebay():
+    """Publish every eligible card as a live eBay listing (background job)."""
+    with _publish_lock:
+        if _publish_state["running"]:
+            return jsonify({"error": "a publish job is already running"}), 409
+        _publish_state.update(running=True, progress=0, total=0, message="starting…", site="ebay")
+
+    def worker():
+        try:
+            from lib.ebay_lister import EbayLister, EbayListingError
+            from lib.ebay_oauth import EbayUserNotAuthorized
+            try:
+                lister = EbayLister()
+            except Exception as exc:
+                _publish_state["message"] = f"cannot start: {exc}"
+                return
+
+            with db.connect(DB_PATH) as conn:
+                cards = _cards_payload(db.list_cards(conn, sort="newest"))
+            eligible = [c for c in cards if c.get("final_price") and c.get("image_url")]
+            _publish_state["total"] = len(eligible)
+
+            done = 0
+            for card in eligible:
+                title = card.get("name") or Path(card.get("crop_path", "")).stem
+                try:
+                    result = lister.publish_card(card)
+                    patch = {
+                        "ebay_listing_id": result.get("listing_id"),
+                        "ebay_offer_id": result.get("offer_id"),
+                        "ebay_listing_url": result.get("url"),
+                        "ebay_listing_status": "listed",
+                        "listed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    }
+                    with db.connect(DB_PATH) as conn:
+                        db.update_card(conn, int(card["id"]), patch)
+                except EbayUserNotAuthorized as exc:
+                    _publish_state["message"] = str(exc)
+                    return
+                except EbayListingError as exc:
+                    print(f"[publish ebay] FAILED {title}: {exc}", file=sys.stderr)
+                    with db.connect(DB_PATH) as conn:
+                        db.update_card(conn, int(card["id"]), {"ebay_listing_status": f"error: {exc}"[:200]})
+                except Exception as exc:  # pragma: no cover
+                    print(f"[publish ebay] error {title}: {exc}", file=sys.stderr)
+                finally:
+                    done += 1
+                    _publish_state["progress"] = done
+                    _publish_state["message"] = f"listed {done}/{len(eligible)}"
+            _publish_state["message"] = f"done — {done} processed"
+        finally:
+            _publish_state["running"] = False
+
+    threading.Thread(target=worker, daemon=True).start()
+    return jsonify({"started": True})
+
+
+@app.route("/api/publish/portal", methods=["POST"])
+def api_publish_portal():
+    """Generate the site's CSV from the DB and upload it via headless browser."""
+    body = request.get_json(silent=True) or {}
+    site = body.get("site") or request.args.get("site")
+    if site not in ("tcgplayer", "whatnot"):
+        return jsonify({"error": "site must be 'tcgplayer' or 'whatnot'"}), 400
+
+    with _publish_lock:
+        if _publish_state["running"]:
+            return jsonify({"error": "a publish job is already running"}), 409
+        _publish_state.update(running=True, progress=0, total=1, message="preparing CSV…", site=site)
+
+    def worker():
+        try:
+            gc = get_csv_gen()
+            with db.connect(DB_PATH) as conn:
+                payload = _cards_payload(db.list_cards(conn, sort="newest"))
+            CSVS_DIR.mkdir(parents=True, exist_ok=True)
+            if site == "tcgplayer":
+                filename, rows_fn = "tcgplayer_bulk.csv", gc.tcgplayer_rows
+                from lib.tcgplayer_lister import TCGPlayerLister as Lister
+            else:
+                filename, rows_fn = "whatnot_seller_hub.csv", gc.whatnot_rows
+                from lib.whatnot_lister import WhatnotLister as Lister
+            path = CSVS_DIR / filename
+            _write_csv(path, rows_fn(payload))
+
+            _publish_state["message"] = f"uploading {filename} to {site}…"
+            with Lister() as lister:
+                result = lister.upload_csv(str(path))
+            _publish_state["progress"] = 1
+            _publish_state["message"] = (
+                f"upload {'ok' if result.get('ok') else 'uncertain'}: {result.get('detail')}"
+            )
+        except Exception as exc:
+            traceback.print_exc()
+            _publish_state["message"] = f"failed: {exc}"
+        finally:
+            _publish_state["running"] = False
+
+    threading.Thread(target=worker, daemon=True).start()
+    return jsonify({"started": True})
 
 
 # ----------------------------------------------------------------------

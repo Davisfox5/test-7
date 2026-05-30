@@ -1,7 +1,10 @@
 # pokemon-bulk-lister
 
-A six-step pipeline that turns photos of binder pages into ready-to-upload
-bulk CSVs for **TCGPlayer**, **Whatnot**, and **eBay**.
+[![CI](https://github.com/Davisfox5/test-7/actions/workflows/ci.yml/badge.svg)](https://github.com/Davisfox5/test-7/actions/workflows/ci.yml)
+
+A seven-step pipeline that turns photos of binder pages into ready-to-upload
+bulk CSVs for **TCGPlayer**, **Whatnot**, and **eBay** — then publishes them
+(eBay live via the Sell API; TCGPlayer/Whatnot via CSV upload).
 
 ```
 input/grids/*.jpg

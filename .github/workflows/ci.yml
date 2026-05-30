@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pokemon-bulk-lister
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install test dependencies
+        # Lightweight slice of requirements.txt — enough to import the modules
+        # under test. cv2/cloudinary/playwright are deliberately omitted: the
+        # publish logic imports them lazily (or we stub Playwright in conftest),
+        # so CI stays fast and doesn't pull a browser.
+        run: pip install requests "Flask>=3.0" python-dotenv "pandas>=2.2" pytest
+
+      - name: Byte-compile all sources
+        run: python -m compileall -q lib webapp scripts
+
+      - name: Run tests
+        run: pytest -q

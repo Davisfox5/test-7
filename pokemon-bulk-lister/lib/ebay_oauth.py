@@ -139,15 +139,18 @@ class EbayUserAuth:
     def extract_code(redirect_response: str) -> str:
         """Pull the ``code`` from a pasted redirect URL (or accept a bare code)."""
         redirect_response = redirect_response.strip()
-        if "code=" not in redirect_response:
-            # Assume the user pasted the bare code.
-            return urllib.parse.unquote(redirect_response)
-        parsed = urllib.parse.urlparse(redirect_response)
-        query = urllib.parse.parse_qs(parsed.query)
-        code = query.get("code", [None])[0]
-        if not code:
+        if "code=" in redirect_response:
+            parsed = urllib.parse.urlparse(redirect_response)
+            query = urllib.parse.parse_qs(parsed.query)
+            code = query.get("code", [None])[0]
+            if not code:
+                raise EbayUserAuthError("no ?code= found in the pasted redirect URL")
+            return code
+        # Looks like a URL but carries no code → the wrong thing was pasted.
+        if "://" in redirect_response or "?" in redirect_response:
             raise EbayUserAuthError("no ?code= found in the pasted redirect URL")
-        return code
+        # Otherwise assume the user pasted the bare code.
+        return urllib.parse.unquote(redirect_response)
 
     def exchange_code(self, code: str) -> dict:
         """Trade an authorization code for access + refresh tokens; persist refresh."""

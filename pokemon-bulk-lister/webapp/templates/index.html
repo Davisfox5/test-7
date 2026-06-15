@@ -107,6 +107,14 @@
       </header>
       <div class="modal-body">
         <img id="modal-img" alt="" />
+        <div class="catalog-search">
+          <input id="catalog-q" placeholder="🔎 Search catalog by name…" autocomplete="off" />
+          <div id="catalog-results" class="catalog-results hidden"></div>
+        </div>
+        <div class="chart-wrap">
+          <div class="chart-title">Price history <span class="muted small" id="chart-meta"></span></div>
+          <div id="modal-chart" class="chart muted small">—</div>
+        </div>
         <form id="edit-form">
           <input type="hidden" name="id" />
           <label>Name <input name="name" /></label>

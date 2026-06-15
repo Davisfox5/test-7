@@ -88,6 +88,38 @@ class TCGPlayerClient:
                     return c
         return cards[0]
 
+    def search_cards(self, query: str, page_size: int = 20) -> list[dict]:
+        """Free-text catalog search by card name (prefix match).
+
+        Used to seed the local catalog from pokemontcg.io when a user searches
+        for a card we haven't priced yet.
+        """
+        q = (query or "").strip()
+        if not q:
+            return []
+        data = self._get(
+            "/cards",
+            {"q": f'name:"{_escape(q)}*"', "pageSize": page_size, "orderBy": "name"},
+        )
+        return data.get("data") or []
+
+    @staticmethod
+    def catalog_fields(card: dict) -> dict:
+        """Project a pokemontcg.io card into our card_catalog row shape."""
+        card = card or {}
+        return {
+            "id": card.get("id"),
+            "name": card.get("name"),
+            "set_id": (card.get("set") or {}).get("id"),
+            "set_name": (card.get("set") or {}).get("name"),
+            "number": card.get("number"),
+            "rarity": card.get("rarity"),
+            "image_small": (card.get("images") or {}).get("small"),
+            "image_large": (card.get("images") or {}).get("large"),
+            "tcgplayer_url": (card.get("tcgplayer") or {}).get("url"),
+            "cardmarket_url": (card.get("cardmarket") or {}).get("url"),
+        }
+
     def market_price(self, card: dict, prefer_holo: bool = False) -> Optional[float]:
         """Pull TCGPlayer market price (USD) from the card payload.
 

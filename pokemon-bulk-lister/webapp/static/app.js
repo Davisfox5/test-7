@@ -203,7 +203,118 @@ function openEdit(id) {
     <div>Image URL<strong>${card.image_url ? "uploaded" : "—"}</strong></div>
     <div>Notes<strong>${escapeHtml(card.pricing_notes || "")}</strong></div>
   `;
+  // Reset + load the catalog price-history chart for this card.
+  $("#catalog-q").value = "";
+  $("#catalog-results").classList.add("hidden");
+  loadHistory(card.tcgplayer_product_id);
   $("#modal").classList.remove("hidden");
+}
+
+// ---------------------------------------------------------------- price-history chart
+async function loadHistory(catalogId) {
+  const el = $("#modal-chart");
+  const meta = $("#chart-meta");
+  if (!catalogId) {
+    el.innerHTML = `<span class="muted">no catalog match yet — price this card to start its history</span>`;
+    meta.textContent = "";
+    return;
+  }
+  el.innerHTML = `<span class="muted">loading…</span>`;
+  try {
+    const data = await api(`/api/catalog/${encodeURIComponent(catalogId)}/history`);
+    renderChart(data.points || []);
+  } catch {
+    el.innerHTML = `<span class="muted">history unavailable</span>`;
+  }
+}
+
+function renderChart(points) {
+  const el = $("#modal-chart");
+  const meta = $("#chart-meta");
+  if (!points.length) {
+    el.innerHTML = `<span class="muted">no history yet — price this card to start it</span>`;
+    meta.textContent = "";
+    return;
+  }
+  // Prefer the aggregated 'final' series; fall back to TCG market if sparse.
+  let label = "final price";
+  let series = points.filter(p => p.source === "final");
+  if (series.length < 2) {
+    const tcg = points.filter(p => p.source === "tcgplayer_market");
+    if (tcg.length > series.length) { series = tcg; label = "TCG market"; }
+  }
+  series = series
+    .map(p => ({ t: new Date(p.captured_at.replace(" ", "T") + "Z").getTime(), v: p.price }))
+    .filter(p => !isNaN(p.t))
+    .sort((a, b) => a.t - b.t);
+
+  const latest = series.length ? series[series.length - 1].v : null;
+  meta.textContent = latest != null ? `· ${label}, latest $${latest.toFixed(2)} · ${series.length} pt(s)` : "";
+
+  if (series.length < 2) {
+    el.innerHTML = `<span class="muted">${latest != null ? `$${latest.toFixed(2)} — price again to chart a trend` : "no points"}</span>`;
+    return;
+  }
+  const W = 320, H = 80, pad = 6;
+  const ts = series.map(s => s.t), vs = series.map(s => s.v);
+  const tmin = Math.min(...ts), tmax = Math.max(...ts);
+  const vmin = Math.min(...vs), vmax = Math.max(...vs);
+  const x = t => pad + (tmax === tmin ? 0 : (t - tmin) / (tmax - tmin)) * (W - 2 * pad);
+  const y = v => H - pad - (vmax === vmin ? 0.5 : (v - vmin) / (vmax - vmin)) * (H - 2 * pad);
+  const poly = series.map(s => `${x(s.t).toFixed(1)},${y(s.v).toFixed(1)}`).join(" ");
+  const up = vs[vs.length - 1] >= vs[0];
+  const color = up ? "#15803d" : "#b00020";
+  el.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none">
+      <polyline points="${poly}" fill="none" stroke="${color}" stroke-width="2" />
+      <circle cx="${x(series[series.length - 1].t).toFixed(1)}" cy="${y(latest).toFixed(1)}" r="3" fill="${color}" />
+    </svg>
+    <div class="chart-axis muted small"><span>$${vmin.toFixed(2)}</span><span>$${vmax.toFixed(2)}</span></div>`;
+}
+
+// ---------------------------------------------------------------- catalog search (in modal)
+function setupCatalogSearch() {
+  const input = $("#catalog-q");
+  const box = $("#catalog-results");
+  if (!input) return;
+  let timer = null;
+
+  input.addEventListener("input", () => {
+    clearTimeout(timer);
+    const q = input.value.trim();
+    if (q.length < 2) { box.classList.add("hidden"); box.innerHTML = ""; return; }
+    timer = setTimeout(async () => {
+      try {
+        const data = await api(`/api/catalog/search?q=${encodeURIComponent(q)}`);
+        const rows = (data.results || []).slice(0, 8);
+        if (!rows.length) { box.innerHTML = `<div class="muted small pad">no matches</div>`; }
+        else {
+          box.innerHTML = rows.map(r => `
+            <div class="catalog-hit" data-id="${escapeHtml(r.id)}"
+                 data-name="${escapeHtml(r.name || "")}" data-set="${escapeHtml(r.set_name || "")}"
+                 data-setid="${escapeHtml(r.set_id || "")}" data-number="${escapeHtml(r.number || "")}">
+              ${r.image_small ? `<img src="${escapeHtml(r.image_small)}" alt="" />` : ""}
+              <span><strong>${escapeHtml(r.name || "")}</strong>
+              <span class="muted small">${escapeHtml(r.set_name || "")} · #${escapeHtml(r.number || "")}</span></span>
+            </div>`).join("");
+        }
+        box.classList.remove("hidden");
+      } catch { box.classList.add("hidden"); }
+    }, 300);
+  });
+
+  box.addEventListener("click", ev => {
+    const hit = ev.target.closest(".catalog-hit");
+    if (!hit) return;
+    const form = $("#edit-form");
+    form.name.value = hit.dataset.name;
+    form.set_name.value = hit.dataset.set;
+    form.set_code.value = hit.dataset.setid;
+    form.card_number.value = hit.dataset.number;
+    box.classList.add("hidden");
+    input.value = "";
+    loadHistory(hit.dataset.id);
+  });
 }
 
 function closeEdit() { $("#modal").classList.add("hidden"); state.editing = null; }
@@ -455,5 +566,6 @@ setupModal();
 setupToolbar();
 setupPublish();
 setupInvite();
+setupCatalogSearch();
 setupKeyboard();
 loadCards();

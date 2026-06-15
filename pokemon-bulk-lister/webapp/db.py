@@ -101,13 +101,46 @@ CREATE TABLE IF NOT EXISTS cards (
 CREATE INDEX IF NOT EXISTS idx_cards_grid         ON cards(grid_id);
 CREATE INDEX IF NOT EXISTS idx_cards_needs_review ON cards(needs_review);
 CREATE INDEX IF NOT EXISTS idx_cards_name         ON cards(name);
+
+CREATE TABLE IF NOT EXISTS card_catalog (
+    id             TEXT PRIMARY KEY,          -- pokemontcg.io card id, e.g. "base1-4"
+    name           TEXT,
+    set_id         TEXT,
+    set_name       TEXT,
+    number         TEXT,
+    rarity         TEXT,
+    image_small    TEXT,
+    image_large    TEXT,
+    tcgplayer_url  TEXT,
+    cardmarket_url TEXT,
+    updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS price_points (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    catalog_id  TEXT NOT NULL REFERENCES card_catalog(id) ON DELETE CASCADE,
+    source      TEXT NOT NULL,                -- 'tcgplayer_market', 'final', ...
+    price       REAL NOT NULL,
+    captured_by INTEGER REFERENCES users(id),
+    captured_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_price_points_catalog ON price_points(catalog_id, captured_at);
+CREATE INDEX IF NOT EXISTS idx_catalog_name         ON card_catalog(name);
 """
+
+# Price sources that are licensed for internal use only and must never appear in
+# a shared/cross-user view (PriceCharting's data license forbids third-party
+# display). The shared catalog history serializer filters these out.
+INTERNAL_ONLY_SOURCES = ("pricecharting_usd",)
 
 # user_id indexes are created after migrations add the column (a legacy DB won't
 # have it when the schema script first runs).
 _USER_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_cards_user ON cards(user_id)",
     "CREATE INDEX IF NOT EXISTS idx_grids_user ON grids(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_price_points_catalog ON price_points(catalog_id, captured_at)",
+    "CREATE INDEX IF NOT EXISTS idx_catalog_name ON card_catalog(name)",
 )
 
 
@@ -157,6 +190,18 @@ _TABLE_MIGRATIONS = (
         redeemed_by INTEGER REFERENCES users(id),
         redeemed_at TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    """CREATE TABLE IF NOT EXISTS card_catalog (
+        id TEXT PRIMARY KEY, name TEXT, set_id TEXT, set_name TEXT, number TEXT,
+        rarity TEXT, image_small TEXT, image_large TEXT, tcgplayer_url TEXT,
+        cardmarket_url TEXT, updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    """CREATE TABLE IF NOT EXISTS price_points (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        catalog_id TEXT NOT NULL REFERENCES card_catalog(id) ON DELETE CASCADE,
+        source TEXT NOT NULL, price REAL NOT NULL,
+        captured_by INTEGER REFERENCES users(id),
+        captured_at TEXT NOT NULL DEFAULT (datetime('now'))
     )""",
 )
 
@@ -417,6 +462,109 @@ def redeem_invite(
         (user_id, code),
     )
     return get_user_by_id(conn, user_id)
+
+
+# ----------------------------------------------------------------------
+# Catalog + price history (Stage 2)
+# ----------------------------------------------------------------------
+
+_CATALOG_FIELDS = (
+    "id", "name", "set_id", "set_name", "number", "rarity",
+    "image_small", "image_large", "tcgplayer_url", "cardmarket_url",
+)
+
+
+def upsert_catalog_card(conn: sqlite3.Connection, cat: dict) -> Optional[str]:
+    """Insert/refresh a canonical catalog row keyed by pokemontcg.io id.
+
+    Returns the catalog id, or None if the dict has no id.
+    """
+    cid = cat.get("id")
+    if not cid:
+        return None
+    cols = [c for c in _CATALOG_FIELDS if c in cat]
+    placeholders = ", ".join("?" for _ in cols)
+    updates = ", ".join(f"{c}=excluded.{c}" for c in cols if c != "id")
+    conn.execute(
+        f"""
+        INSERT INTO card_catalog ({", ".join(cols)})
+        VALUES ({placeholders})
+        ON CONFLICT(id) DO UPDATE SET {updates}, updated_at = datetime('now')
+        """,
+        [cat.get(c) for c in cols],
+    )
+    return cid
+
+
+def record_price_points(
+    conn: sqlite3.Connection,
+    catalog_id: str,
+    sources: dict[str, Optional[float]],
+    final: Optional[float] = None,
+    captured_by: Optional[int] = None,
+) -> int:
+    """Append a timestamped point per non-null source (plus 'final').
+
+    Every pricing run appends rather than overwriting — this is what gives the
+    catalog card a price history to chart.
+    """
+    rows: list[tuple] = []
+    for source, price in sources.items():
+        if price is not None and price > 0:
+            rows.append((catalog_id, source, float(price), captured_by))
+    if final is not None and final > 0:
+        rows.append((catalog_id, "final", float(final), captured_by))
+    if not rows:
+        return 0
+    conn.executemany(
+        "INSERT INTO price_points (catalog_id, source, price, captured_by) VALUES (?, ?, ?, ?)",
+        rows,
+    )
+    return len(rows)
+
+
+def get_catalog_card(conn: sqlite3.Connection, catalog_id: str) -> Optional[dict]:
+    row = conn.execute("SELECT * FROM card_catalog WHERE id = ?", (catalog_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def search_catalog(conn: sqlite3.Connection, query: str, limit: int = 20) -> list[dict]:
+    q = (query or "").strip()
+    if not q:
+        return []
+    rows = conn.execute(
+        """
+        SELECT * FROM card_catalog
+        WHERE name LIKE ? OR set_name LIKE ?
+        ORDER BY name, set_name
+        LIMIT ?
+        """,
+        (f"%{q}%", f"%{q}%", limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def price_history(
+    conn: sqlite3.Connection,
+    catalog_id: str,
+    exclude_sources: tuple[str, ...] = (),
+) -> list[dict]:
+    """Chronological price points for a catalog card.
+
+    ``exclude_sources`` drops licensed-internal sources (e.g. PriceCharting) from
+    any shared/cross-user view.
+    """
+    params: list[Any] = [catalog_id]
+    where = "catalog_id = ?"
+    if exclude_sources:
+        placeholders = ", ".join("?" for _ in exclude_sources)
+        where += f" AND source NOT IN ({placeholders})"
+        params.extend(exclude_sources)
+    rows = conn.execute(
+        f"SELECT source, price, captured_at FROM price_points WHERE {where} ORDER BY captured_at",
+        params,
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def maybe_import_legacy_json(

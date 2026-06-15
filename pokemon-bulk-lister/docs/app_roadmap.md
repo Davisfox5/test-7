@@ -30,9 +30,14 @@ flow, or marketplace publishing — those are the assets we wrap.
 
 ---
 
-## Stage 1 — Multi-user foundation (auth + ownership)
+## Stage 1 — Multi-user foundation (auth + ownership) ✅ DONE
 
 **Outcome:** several people log in; each sees only their own cards/grids.
+
+> Shipped on the existing raw-SQLite layer (invite-only auth, per-user
+> ownership + file namespacing, isolation tests). The SQLAlchemy/Postgres port
+> was intentionally deferred to Stage 4, where hosting actually needs it —
+> adding an ORM while staying on SQLite bought nothing now and added risk.
 
 - Introduce SQLAlchemy + a portable schema so we can run SQLite locally and
   Postgres in prod without rewriting queries. (Keep the existing `db.py`
@@ -48,18 +53,26 @@ flow, or marketplace publishing — those are the assets we wrap.
 **Decisions:** Postgres now or defer to Stage 4? (Recommend: add the SQLAlchemy
 layer now, stay on SQLite until hosting.)
 
-## Stage 2 — Catalog + price history (the "real app" core)
+## Stage 2 — Catalog + price history (the "real app" core) ✅ DONE
 
 **Outcome:** browse/search a card catalog; see a price *chart* over time.
 
-- `card_catalog` table seeded from pokemontcg.io (sets, names, numbers, images,
-  ids). A background sync job refreshes it.
-- `price_points` time-series table: `(catalog_id, source, price, captured_at)`.
-  Every pricing run appends instead of overwriting — this is what unlocks
-  trends/charts and is the single biggest "usable app" upgrade.
-- Link a user's `cards` to `card_catalog` so identification becomes
-  pick-from-catalog (and gets more accurate).
-- Read API: `/api/catalog/search`, `/api/catalog/<id>/history`.
+- `card_catalog` table keyed by the pokemontcg.io card id (reuses the id we
+  already store as `tcgplayer_product_id`), seeded **lazily**: every priced card
+  upserts its canonical row, and catalog search seeds from pokemontcg.io on a
+  cold cache.
+- `price_points` time-series table: `(catalog_id, source, price, captured_by,
+  captured_at)`. Every pricing run appends instead of overwriting — this is what
+  unlocks trends/charts and is the single biggest "usable app" upgrade.
+- Identification becomes pick-from-catalog via the modal's catalog search box.
+- Read API: `/api/catalog/search`, `/api/catalog/<id>`,
+  `/api/catalog/<id>/history`; an inline SVG chart renders the history.
+- **Guardrail brought forward from Stage 5:** PriceCharting (internal-only by
+  license) is recorded for the owner's aggregation but excluded from the shared
+  history serializer.
+
+Deferred to Stage 3 (UX): a dedicated catalog browse screen and portfolio-level
+charts — Stage 2 surfaces history per-card in the existing modal.
 
 ## Stage 3 — UX surfaces
 

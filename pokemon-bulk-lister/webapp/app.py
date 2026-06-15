@@ -336,6 +336,52 @@ def api_bulk_update_cards():
 
 
 # ----------------------------------------------------------------------
+# Catalog + price history (shared within the group)
+# ----------------------------------------------------------------------
+
+@app.route("/api/catalog/search")
+@login_required
+def api_catalog_search():
+    q = request.args.get("q", "")
+    limit = min(int(request.args.get("limit", 20)), 50)
+    with db.connect(DB_PATH) as conn:
+        results = db.search_catalog(conn, q, limit=limit)
+    # Cold cache: seed from pokemontcg.io so search is useful before you've
+    # priced anything, then re-read locally.
+    if not results and q.strip():
+        try:
+            cards = get_tcg().search_cards(q, page_size=limit)
+            with db.connect(DB_PATH) as conn:
+                for c in cards:
+                    db.upsert_catalog_card(conn, TCGPlayerClient.catalog_fields(c))
+                results = db.search_catalog(conn, q, limit=limit)
+        except Exception as exc:
+            print(f"[catalog search] {q}: {exc}", file=sys.stderr)
+    return jsonify({"results": results})
+
+
+@app.route("/api/catalog/<path:catalog_id>/history")
+@login_required
+def api_catalog_history(catalog_id: str):
+    with db.connect(DB_PATH) as conn:
+        card = db.get_catalog_card(conn, catalog_id)
+        # PriceCharting and any other internal-only source are filtered from this
+        # shared view per its data license.
+        points = db.price_history(conn, catalog_id, exclude_sources=db.INTERNAL_ONLY_SOURCES)
+    return jsonify({"catalog": card, "points": points})
+
+
+@app.route("/api/catalog/<path:catalog_id>")
+@login_required
+def api_catalog_card(catalog_id: str):
+    with db.connect(DB_PATH) as conn:
+        card = db.get_catalog_card(conn, catalog_id)
+    if not card:
+        abort(404)
+    return jsonify(card)
+
+
+# ----------------------------------------------------------------------
 # Upload + split
 # ----------------------------------------------------------------------
 
@@ -409,7 +455,7 @@ def api_price_card(card_id: int):
     if not card.get("name"):
         return jsonify({"error": "card has no name — identify it first"}), 400
     try:
-        result = _price_card(card)
+        result = _price_card(card, captured_by=uid)
         with db.connect(DB_PATH) as conn:
             updated = db.update_card(conn, card_id, result, user_id=uid)
         return jsonify(updated)
@@ -474,7 +520,7 @@ def api_run_pricing_all():
             def price_one_pass1(card: dict) -> None:
                 """TCG + CM + eBay-MI for one card."""
                 try:
-                    patch, tcg_card = _price_card_pass1(card)
+                    patch, tcg_card = _price_card_pass1(card, captured_by=uid)
                     if tcg_card is not None:
                         with resolved_lock:
                             resolved_cards[int(card["id"])] = tcg_card
@@ -607,12 +653,12 @@ def api_pricing_status():
     return jsonify(_job_state)
 
 
-def _price_card_pass1(card: dict) -> tuple[dict, Optional[dict]]:
+def _price_card_pass1(card: dict, captured_by: Optional[int] = None) -> tuple[dict, Optional[dict]]:
     """Pass-1 pricing wrapper: returns (patch, resolved_card)."""
-    return _price_card(card, terapeak=None, return_card=True)
+    return _price_card(card, terapeak=None, return_card=True, captured_by=captured_by)
 
 
-def _price_card(card: dict, terapeak=None, return_card: bool = False):
+def _price_card(card: dict, terapeak=None, return_card: bool = False, captured_by: Optional[int] = None):
     tcg = get_tcg()
     ebay = get_ebay()
 
@@ -756,6 +802,15 @@ def _price_card(card: dict, terapeak=None, return_card: bool = False):
         patch["tcgplayer_product_id"] = tcg_card.get("id")
         patch["tcgplayer_url"] = (tcg_card.get("tcgplayer") or {}).get("url")
         patch["cardmarket_url"] = (tcg_card.get("cardmarket") or {}).get("url")
+        # Catalog + price history: upsert the canonical card and append this
+        # run's points so the card accrues a chartable price history.
+        try:
+            with db.connect(DB_PATH) as conn:
+                cid = db.upsert_catalog_card(conn, get_tcg().catalog_fields(tcg_card))
+                if cid:
+                    db.record_price_points(conn, cid, result.sources, result.price, captured_by=captured_by)
+        except Exception as exc:  # pragma: no cover - history is best-effort
+            print(f"[catalog] {name}: {exc}", file=sys.stderr)
     if return_card:
         return patch, tcg_card
     return patch

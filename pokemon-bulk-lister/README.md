@@ -72,6 +72,21 @@ python -m webapp.manage invite            # prints a single-use /invite/<code> l
 New users open `/invite/<code>`, choose a username + password, and are signed in.
 Sign in at `/login`; log out from the header.
 
+### Catalog & price history
+
+The app keeps a shared **card catalog** (canonical cards from pokemontcg.io,
+keyed by their card id) and a **price-history** time series. Every time you price
+a card, each source's value plus the aggregated final price is *appended* to that
+catalog card's history — so prices accrue a trend instead of being overwritten.
+
+- The card edit modal shows a **price-history chart** and a **catalog search**
+  box (type a name to look up the canonical card and fill in set / number).
+- The catalog is shared within the group; per-card *ownership* is not. PriceCharting
+  values are recorded for your own aggregation but **excluded from the shared
+  history view** to respect its internal-use-only data license.
+- APIs: `GET /api/catalog/search?q=`, `GET /api/catalog/<id>`,
+  `GET /api/catalog/<id>/history`.
+
 Data lives at `output/db.sqlite` (auto-created; auto-imports any existing
 `output/cards.json` / `output/cards_priced.json` on first launch). Drop binder
 photos into the drop-zone — they're split into crops automatically and inserted

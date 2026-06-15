@@ -43,6 +43,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from lib.ebay_client import EbayAuthError, EbayClient  # noqa: E402
+from lib.pricecharting_client import PriceChartingClient  # noqa: E402
 from lib.pricing import aggregate  # noqa: E402
 from lib.tcgplayer_client import TCGPlayerClient  # noqa: E402
 from webapp import db  # noqa: E402
@@ -89,6 +90,7 @@ app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024  # 64 MB
 # Lazy singletons
 _tcg_client: Optional[TCGPlayerClient] = None
 _ebay_client: Optional[EbayClient] = None
+_pricecharting_client: Optional[PriceChartingClient] = None
 _split_grids = None
 _csv_gen = None
 
@@ -131,6 +133,13 @@ def get_ebay() -> EbayClient:
     if _ebay_client is None:
         _ebay_client = EbayClient()
     return _ebay_client
+
+
+def get_pricecharting() -> PriceChartingClient:
+    global _pricecharting_client
+    if _pricecharting_client is None:
+        _pricecharting_client = PriceChartingClient()
+    return _pricecharting_client
 
 
 def get_split_grids():
@@ -400,6 +409,7 @@ def api_run_pricing_all():
                                     ebay_max_30d=row.get("ebay_max_30d"),
                                     cardmarket_trend_usd=row.get("cardmarket_trend_usd"),
                                     terapeak_median_usd=tp_med,
+                                    pricecharting_usd=row.get("pricecharting_market"),
                                 )
                                 patch = {
                                     "terapeak_median_usd": tp_med,
@@ -571,12 +581,23 @@ def _price_card(card: dict, terapeak=None, return_card: bool = False):
         except Exception as exc:
             print(f"[terapeak] {name}: {exc}", file=sys.stderr)
 
+    pc_price: Optional[float] = None
+    pricecharting = get_pricecharting()
+    if pricecharting.enabled:
+        try:
+            pc_price, _ = pricecharting.lookup_price(
+                name=name, set_name=set_name, card_number=card_number,
+            )
+        except Exception as exc:
+            print(f"[pricecharting] {name}: {exc}", file=sys.stderr)
+
     result = aggregate(
         tcgplayer_market=tcg_price,
         ebay_median_30d=ebay_stats.get("median"),
         ebay_max_30d=ebay_stats.get("max"),
         cardmarket_trend_usd=cm_usd,
         terapeak_median_usd=terapeak_stats.get("median"),
+        pricecharting_usd=pc_price,
     )
 
     # Build pricing_notes from all signals so the user has full context.
@@ -608,6 +629,7 @@ def _price_card(card: dict, terapeak=None, return_card: bool = False):
         "ebay_sold_count_30d": ebay_stats.get("count", 0),
         "terapeak_median_usd": terapeak_stats.get("median"),
         "terapeak_sold_count_365d": terapeak_stats.get("count", 0),
+        "pricecharting_market": pc_price,
         "final_price": result.price,
         "pricing_confidence": final_conf,
         "outlier_flag": result.outlier_flag,

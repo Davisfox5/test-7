@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.ebay_client import EbayAuthError, EbayClient  # noqa: E402
+from lib.pricecharting_client import PriceChartingClient  # noqa: E402
 from lib.pricing import aggregate  # noqa: E402
 from lib.tcgplayer_client import TCGPlayerClient  # noqa: E402
 
@@ -30,6 +31,7 @@ def enrich_one(
     ebay: EbayClient,
     eur_usd_rate: float,
     terapeak: Optional["TerapeakClient"] = None,
+    pricecharting: Optional[PriceChartingClient] = None,
 ) -> dict:
     name = entry.get("name", "").strip()
     if not name:
@@ -77,12 +79,22 @@ def enrich_one(
         except Exception as exc:
             print(f"  [terapeak error] {name}: {exc}", file=sys.stderr)
 
+    pc_price: Optional[float] = None
+    if pricecharting is not None and pricecharting.enabled:
+        try:
+            pc_price, _ = pricecharting.lookup_price(
+                name=name, set_name=set_name, card_number=card_number,
+            )
+        except Exception as exc:
+            print(f"  [pricecharting error] {name}: {exc}", file=sys.stderr)
+
     result = aggregate(
         tcgplayer_market=tcg_price,
         ebay_median_30d=ebay_stats.get("median"),
         ebay_max_30d=ebay_stats.get("max"),
         cardmarket_trend_usd=cm_usd,
         terapeak_median_usd=terapeak_stats.get("median"),
+        pricecharting_usd=pc_price,
     )
 
     enriched = dict(entry)
@@ -94,6 +106,7 @@ def enrich_one(
     enriched["pricing_notes"] = result.notes
     enriched["ebay_sold_count_30d"] = ebay_stats.get("count", 0)
     enriched["terapeak_sold_count_365d"] = terapeak_stats.get("count", 0)
+    enriched["pricecharting_market"] = pc_price
     enriched["cardmarket_trend_eur"] = cm_eur
     if tcg_card is not None:
         enriched["tcgplayer_product_id"] = tcg_card.get("id")
@@ -135,12 +148,18 @@ def main() -> int:
         terapeak = TerapeakClient()
         print(f"Terapeak headless scraping enabled (EUR_USD_RATE={eur_usd_rate})")
 
+    pricecharting = PriceChartingClient()
+    if pricecharting.enabled:
+        print("PriceCharting source enabled")
+
     enriched: list[dict] = []
     try:
         for i, entry in enumerate(entries, 1):
             name = entry.get("name", "<unidentified>")
             print(f"[{i}/{len(entries)}] {name}")
-            enriched.append(enrich_one(entry, tcg, ebay, eur_usd_rate, terapeak))
+            enriched.append(
+                enrich_one(entry, tcg, ebay, eur_usd_rate, terapeak, pricecharting)
+            )
     finally:
         if terapeak is not None:
             terapeak.close()

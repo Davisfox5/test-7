@@ -41,6 +41,7 @@ def aggregate(
     ebay_max_30d: Optional[float],
     cardmarket_trend_usd: Optional[float] = None,
     terapeak_median_usd: Optional[float] = None,
+    pricecharting_usd: Optional[float] = None,
 ) -> PricingResult:
     """Aggregate prices from multiple sources.
 
@@ -62,6 +63,7 @@ def aggregate(
         "ebay_max_30d": ebay_max_30d,
         "cardmarket_trend_usd": cardmarket_trend_usd,
         "terapeak_median_usd": terapeak_median_usd,
+        "pricecharting_usd": pricecharting_usd,
     }
 
     # Bad-data correction: TCG vs Cardmarket disagreement on the SAME card.
@@ -93,6 +95,7 @@ def aggregate(
         ebay_max_30d,
         cardmarket_trend_usd,
         terapeak_median_usd,
+        pricecharting_usd,
     ]
     valid = _non_null(prices)
 

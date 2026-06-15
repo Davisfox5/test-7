@@ -73,6 +73,19 @@ Free tier doesn't require a key for low volume, but signing up at
 <https://dev.pokemontcg.io/> gets you a higher rate limit. Drop the key into
 `POKEMONTCG_API_KEY` in `.env`.
 
+### PriceCharting (optional pricing source)
+Adds an eBay-sold-median price plus graded (PSA/BGS/CGC/SGC) tiers. Requires a
+paid **Legendary**-tier subscription at <https://www.pricecharting.com/> — that
+tier is what gates API access. Copy the 40-character API token from your account
+page into `PRICECHARTING_API_TOKEN`. With no token the source is simply skipped,
+so the rest of the pipeline runs unchanged.
+
+> ⚠️ **Data license.** PriceCharting permits *internal business use* of its price
+> data but forbids displaying those prices to third parties or the public without
+> express written permission. Keep it to internal/derived use (our aggregation
+> does exactly this); do not surface raw PriceCharting numbers in a shared or
+> public UI without a written agreement from them.
+
 ### eBay developer API
 The eBay client uses **OAuth client-credentials**, the Browse API, and the
 Marketplace Insights API (sold-listing data).
@@ -184,11 +197,12 @@ For each card we collect up to five numbers:
 | `ebay_median_30d`      | median of eBay sold listings (last 30d, NM, US, English) |
 | `ebay_max_30d`         | max of same set |
 | `terapeak_median_usd`  | optional — median of Terapeak Research sold listings (last 365d) via Playwright headless scrape |
+| `pricecharting_usd`    | optional — PriceCharting ungraded ("loose") price via paid REST API (`PRICECHARTING_API_TOKEN`) |
 
 Rule:
 
 ```
-prices  = [tcg, cardmarket_usd, ebay_median_30d, ebay_max_30d, terapeak_median_usd]
+prices  = [tcg, cardmarket_usd, ebay_median_30d, ebay_max_30d, terapeak_median_usd, pricecharting_usd]
 median  = statistics.median(non_null(prices))
 candidate = max(prices)
 
@@ -259,7 +273,7 @@ The scraper writes screenshots + HTML to `output/cache/terapeak_debug/` whenever
 
 ## Out of scope (for now)
 
-- PriceCharting and Pokedata.io paid tiers (data-license / commercial-use restrictions)
+- Pokedata.io paid tiers (data-license / commercial-use restrictions)
 - PWCC / Fanatics Collect, Goldin, Heritage, REA scraping (TOS-prohibited)
 - Condition assessment beyond a rough NM/LP/MP guess
 - Direct *API* push for TCGPlayer & Whatnot — no public seller listing API, so

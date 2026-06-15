@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS cards (
     ebay_sold_count_30d     INTEGER NOT NULL DEFAULT 0,
     terapeak_median_usd     REAL,
     terapeak_sold_count_365d INTEGER NOT NULL DEFAULT 0,
+    pricecharting_market    REAL,
     final_price             REAL,
     pricing_confidence      REAL NOT NULL DEFAULT 0.0,
     outlier_flag            INTEGER NOT NULL DEFAULT 0,
@@ -86,6 +87,7 @@ CARD_FIELDS = (
     "tcgplayer_market", "cardmarket_trend_eur", "cardmarket_trend_usd",
     "ebay_median_30d", "ebay_max_30d", "ebay_sold_count_30d",
     "terapeak_median_usd", "terapeak_sold_count_365d",
+    "pricecharting_market",
     "final_price", "pricing_confidence", "outlier_flag",
     "needs_review", "pricing_notes",
     "tcgplayer_product_id", "tcgplayer_url", "cardmarket_url", "image_url",
@@ -101,6 +103,7 @@ _MIGRATIONS = (
     ("ebay_listing_url", "TEXT"),
     ("ebay_listing_status", "TEXT"),
     ("listed_at", "TEXT"),
+    ("pricecharting_market", "REAL"),
 )
 
 EDITABLE_ID_FIELDS = (

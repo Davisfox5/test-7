@@ -87,6 +87,20 @@ catalog card's history — so prices accrue a trend instead of being overwritten
 - APIs: `GET /api/catalog/search?q=`, `GET /api/catalog/<id>`,
   `GET /api/catalog/<id>/history`.
 
+### Screens
+
+The app is organised into tabs:
+
+- **Collection** — your cards, a **portfolio-value-over-time** chart (a snapshot
+  is recorded after each "Run pricing (all)"), upload, and the pricing table.
+- **Review** — the same table pre-filtered to flagged / low-confidence cards
+  (the tab shows a count badge).
+- **Catalog** — search canonical cards, view a price-history chart, and manage a
+  **watchlist** of cards you don't own yet (each shows its latest price).
+- **Publish** — the eBay / TCGplayer / Whatnot publish panel.
+
+APIs: `GET/POST /api/portfolio/history|snapshot`, `GET/POST/DELETE /api/watchlist`.
+
 Data lives at `output/db.sqlite` (auto-created; auto-imports any existing
 `output/cards.json` / `output/cards_priced.json` on first launch). Drop binder
 photos into the drop-zone — they're split into crops automatically and inserted

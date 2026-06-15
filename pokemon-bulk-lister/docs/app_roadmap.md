@@ -74,17 +74,20 @@ layer now, stay on SQLite until hosting.)
 Deferred to Stage 3 (UX): a dedicated catalog browse screen and portfolio-level
 charts — Stage 2 surfaces history per-card in the existing modal.
 
-## Stage 3 — UX surfaces
+## Stage 3 — UX surfaces ✅ DONE
 
 **Outcome:** more than one screen; it feels like an app.
 
-- Split the single ops page into: **Collection** (your cards, portfolio value),
-  **Catalog** (browse/search + price chart), **Review** (low-confidence queue,
-  reusing existing logic), **Publish** (existing panel).
-- Portfolio value over time (sum of holdings against `price_points`).
-- Watchlist: track catalog cards you don't own yet.
-- Keep server-rendered + vanilla JS to start; revisit a component framework only
-  if the UI complexity demands it.
+- Tabbed nav (client-side, still server-rendered + vanilla JS): **Collection**
+  (cards + portfolio value + upload), **Review** (cards pre-filtered to flagged,
+  with a count badge), **Catalog** (browse/search + price chart + watchlist),
+  **Publish** (existing panel).
+- Portfolio value over time via a `portfolio_snapshots` table — a snapshot is
+  recorded after each run-all pricing job and charted on Collection. (Chosen over
+  deriving from irregular `price_points` timestamps: simpler and exact to what
+  was computed.)
+- Watchlist (`watchlist` table) for catalog cards you don't own yet, each
+  showing its latest price.
 
 ## Stage 4 — Hosting & background work
 

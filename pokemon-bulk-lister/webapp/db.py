@@ -127,6 +127,23 @@ CREATE TABLE IF NOT EXISTS price_points (
 
 CREATE INDEX IF NOT EXISTS idx_price_points_catalog ON price_points(catalog_id, captured_at);
 CREATE INDEX IF NOT EXISTS idx_catalog_name         ON card_catalog(name);
+
+CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    total_value REAL NOT NULL,
+    card_count  INTEGER NOT NULL DEFAULT 0,
+    captured_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS watchlist (
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    catalog_id TEXT NOT NULL REFERENCES card_catalog(id) ON DELETE CASCADE,
+    added_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, catalog_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshots_user ON portfolio_snapshots(user_id, captured_at);
 """
 
 # Price sources that are licensed for internal use only and must never appear in
@@ -141,6 +158,7 @@ _USER_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_grids_user ON grids(user_id)",
     "CREATE INDEX IF NOT EXISTS idx_price_points_catalog ON price_points(catalog_id, captured_at)",
     "CREATE INDEX IF NOT EXISTS idx_catalog_name ON card_catalog(name)",
+    "CREATE INDEX IF NOT EXISTS idx_snapshots_user ON portfolio_snapshots(user_id, captured_at)",
 )
 
 
@@ -202,6 +220,18 @@ _TABLE_MIGRATIONS = (
         source TEXT NOT NULL, price REAL NOT NULL,
         captured_by INTEGER REFERENCES users(id),
         captured_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    """CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        total_value REAL NOT NULL, card_count INTEGER NOT NULL DEFAULT 0,
+        captured_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    """CREATE TABLE IF NOT EXISTS watchlist (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        catalog_id TEXT NOT NULL REFERENCES card_catalog(id) ON DELETE CASCADE,
+        added_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (user_id, catalog_id)
     )""",
 )
 
@@ -563,6 +593,70 @@ def price_history(
     rows = conn.execute(
         f"SELECT source, price, captured_at FROM price_points WHERE {where} ORDER BY captured_at",
         params,
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ----------------------------------------------------------------------
+# Portfolio snapshots + watchlist (Stage 3)
+# ----------------------------------------------------------------------
+
+def record_portfolio_snapshot(conn: sqlite3.Connection, user_id: int) -> dict:
+    """Snapshot the user's current total value + card count for the value chart."""
+    stats = card_stats(conn, user_id=user_id)
+    total = float(stats.get("total_value") or 0.0)
+    count = int(stats.get("priced") or 0)
+    conn.execute(
+        "INSERT INTO portfolio_snapshots (user_id, total_value, card_count) VALUES (?, ?, ?)",
+        (user_id, total, count),
+    )
+    return {"total_value": total, "card_count": count}
+
+
+def portfolio_history(conn: sqlite3.Connection, user_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT total_value, card_count, captured_at FROM portfolio_snapshots "
+        "WHERE user_id = ? ORDER BY captured_at",
+        (user_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def add_watch(conn: sqlite3.Connection, user_id: int, catalog_id: str) -> bool:
+    """Watch a catalog card. Returns False if the catalog card doesn't exist."""
+    if get_catalog_card(conn, catalog_id) is None:
+        return False
+    conn.execute(
+        "INSERT OR IGNORE INTO watchlist (user_id, catalog_id) VALUES (?, ?)",
+        (user_id, catalog_id),
+    )
+    return True
+
+
+def remove_watch(conn: sqlite3.Connection, user_id: int, catalog_id: str) -> None:
+    conn.execute(
+        "DELETE FROM watchlist WHERE user_id = ? AND catalog_id = ?",
+        (user_id, catalog_id),
+    )
+
+
+def list_watch(conn: sqlite3.Connection, user_id: int) -> list[dict]:
+    """The user's watched catalog cards, each with its latest final / TCG price."""
+    rows = conn.execute(
+        """
+        SELECT c.*, w.added_at,
+            (SELECT price FROM price_points p
+               WHERE p.catalog_id = c.id AND p.source = 'final'
+               ORDER BY captured_at DESC LIMIT 1) AS latest_final,
+            (SELECT price FROM price_points p
+               WHERE p.catalog_id = c.id AND p.source = 'tcgplayer_market'
+               ORDER BY captured_at DESC LIMIT 1) AS latest_tcg
+        FROM watchlist w
+        JOIN card_catalog c ON c.id = w.catalog_id
+        WHERE w.user_id = ?
+        ORDER BY w.added_at DESC
+        """,
+        (user_id,),
     ).fetchall()
     return [dict(r) for r in rows]
 

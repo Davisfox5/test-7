@@ -250,3 +250,68 @@ header { flex-direction: column; align-items: stretch; gap: 8px; }
   justify-content: center;
 }
 .chart-axis { display: flex; justify-content: space-between; margin-top: 2px; }
+
+/* ---- Tabs + views (Stage 3) ---- */
+.tabs { display: flex; gap: 4px; margin-top: 4px; }
+.tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--muted);
+}
+.tab:hover { color: var(--fg); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.tab-badge {
+  display: inline-block;
+  background: var(--row-flag-text);
+  color: white;
+  border-radius: 9px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: 4px;
+}
+.view { margin-top: 8px; }
+
+/* ---- Portfolio panel ---- */
+.portfolio-head { display: flex; align-items: center; gap: 24px; }
+.portfolio-value { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.portfolio-chart-wrap { flex: 1; min-width: 0; }
+
+/* ---- Catalog browse ---- */
+.cat-browse-bar { margin-bottom: 12px; }
+#cat-browse-q {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 14px;
+}
+.cat-browse-layout { display: grid; grid-template-columns: 1fr 360px; gap: 16px; }
+@media (max-width: 760px) { .cat-browse-layout { grid-template-columns: 1fr; } }
+.cat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+  max-height: 460px;
+  overflow-y: auto;
+}
+.cat-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  cursor: pointer;
+  text-align: center;
+}
+.cat-card:hover { border-color: var(--accent); }
+.cat-card img, .cat-card .noimg { width: 100%; height: auto; border-radius: 4px; aspect-ratio: 5/7; object-fit: contain; background: var(--button-bg); }
+.cat-card-name { font-weight: 600; margin-top: 6px; font-size: 13px; }
+.cat-detail { border-left: 1px solid var(--border); padding-left: 16px; }
+#cat-watch-btn { margin-top: 10px; }
+
+.watch-table { width: 100%; border-collapse: collapse; }
+.watch-table th, .watch-table td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
+.watch-table .thumb img { width: 36px; height: auto; border-radius: 3px; }

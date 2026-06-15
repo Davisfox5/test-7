@@ -382,6 +382,67 @@ def api_catalog_card(catalog_id: str):
 
 
 # ----------------------------------------------------------------------
+# Portfolio value over time
+# ----------------------------------------------------------------------
+
+@app.route("/api/portfolio/history")
+@login_required
+def api_portfolio_history():
+    with db.connect(DB_PATH) as conn:
+        snapshots = db.portfolio_history(conn, current_user.id)
+        stats = db.card_stats(conn, user_id=current_user.id)
+    return jsonify({
+        "snapshots": snapshots,
+        "current": {
+            "total_value": stats.get("total_value") or 0.0,
+            "card_count": stats.get("priced") or 0,
+        },
+    })
+
+
+@app.route("/api/portfolio/snapshot", methods=["POST"])
+@login_required
+def api_portfolio_snapshot():
+    with db.connect(DB_PATH) as conn:
+        snap = db.record_portfolio_snapshot(conn, current_user.id)
+    return jsonify(snap)
+
+
+# ----------------------------------------------------------------------
+# Watchlist
+# ----------------------------------------------------------------------
+
+@app.route("/api/watchlist", methods=["GET"])
+@login_required
+def api_watchlist():
+    with db.connect(DB_PATH) as conn:
+        items = db.list_watch(conn, current_user.id)
+    return jsonify({"watchlist": items})
+
+
+@app.route("/api/watchlist", methods=["POST"])
+@login_required
+def api_watchlist_add():
+    body = request.get_json(silent=True) or {}
+    catalog_id = body.get("catalog_id")
+    if not catalog_id:
+        abort(400, "catalog_id required")
+    with db.connect(DB_PATH) as conn:
+        ok = db.add_watch(conn, current_user.id, catalog_id)
+    if not ok:
+        return jsonify({"error": "unknown catalog card"}), 404
+    return jsonify({"watched": True, "catalog_id": catalog_id})
+
+
+@app.route("/api/watchlist/<path:catalog_id>", methods=["DELETE"])
+@login_required
+def api_watchlist_remove(catalog_id: str):
+    with db.connect(DB_PATH) as conn:
+        db.remove_watch(conn, current_user.id, catalog_id)
+    return jsonify({"watched": False, "catalog_id": catalog_id})
+
+
+# ----------------------------------------------------------------------
 # Upload + split
 # ----------------------------------------------------------------------
 
@@ -626,6 +687,13 @@ def api_run_pricing_all():
             # Wait for Terapeak drain to finish
             if terapeak_thread is not None:
                 terapeak_thread.join()
+
+            # Snapshot the post-run portfolio value for the value-over-time chart.
+            try:
+                with db.connect(DB_PATH) as conn:
+                    db.record_portfolio_snapshot(conn, uid)
+            except Exception as exc:  # pragma: no cover - snapshot is best-effort
+                print(f"[portfolio snapshot] {exc}", file=sys.stderr)
 
             _job_state["message"] = "done"
         finally:

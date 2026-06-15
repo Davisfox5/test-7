@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign in · Pokémon bulk lister</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <h1>Pokémon bulk lister</h1>
+      <p class="muted">Sign in to continue.</p>
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}<div class="auth-error">{{ messages[0] }}</div>{% endif %}
+      {% endwith %}
+      <form method="post" class="auth-form">
+        <label>Username <input name="username" autocomplete="username" autofocus required /></label>
+        <label>Password <input name="password" type="password" autocomplete="current-password" required /></label>
+        <button type="submit">Sign in</button>
+      </form>
+      <p class="muted small">No account? Ask an admin for an invite link.</p>
+    </div>
+  </div>
+</body>
+</html>

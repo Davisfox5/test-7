@@ -31,12 +31,16 @@ from dotenv import load_dotenv
 from flask import (
     Flask,
     abort,
+    flash,
     jsonify,
+    redirect,
     render_template,
     request,
     send_file,
     send_from_directory,
+    url_for,
 )
+from flask_login import current_user, login_required, login_user, logout_user
 
 # Allow direct python -m webapp.app from project root.
 ROOT = Path(__file__).resolve().parent.parent
@@ -47,6 +51,7 @@ from lib.pricecharting_client import PriceChartingClient  # noqa: E402
 from lib.pricing import aggregate  # noqa: E402
 from lib.tcgplayer_client import TCGPlayerClient  # noqa: E402
 from webapp import db  # noqa: E402
+from webapp.auth import User, init_login_manager  # noqa: E402
 
 
 def _load_split_grids():
@@ -87,6 +92,12 @@ app = Flask(
 )
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024  # 64 MB
 
+# Session signing key. Set FLASK_SECRET_KEY in prod; the dev fallback resets on
+# restart (logging everyone out), which is fine for local use but not shared.
+app.secret_key = os.getenv("FLASK_SECRET_KEY") or "dev-only-insecure-key-change-me"
+if not os.getenv("FLASK_SECRET_KEY"):
+    print("[webapp] WARNING: FLASK_SECRET_KEY unset — using an insecure dev key", file=sys.stderr)
+
 # Lazy singletons
 _tcg_client: Optional[TCGPlayerClient] = None
 _ebay_client: Optional[EbayClient] = None
@@ -112,13 +123,31 @@ def _init() -> None:
     CSVS_DIR.mkdir(parents=True, exist_ok=True)
     INPUT_DIR.mkdir(parents=True, exist_ok=True)
     db.init_db(DB_PATH)
+    # Legacy JSON import is owner-aware: assign it to the lowest-id (seed admin)
+    # user if one exists, else leave it unowned until the first admin is created
+    # and re-runs this (auth-gated installs won't have a user on very first boot).
     with db.connect(DB_PATH) as conn:
-        imported = db.maybe_import_legacy_json(conn)
+        seed = conn.execute("SELECT id FROM users ORDER BY id LIMIT 1").fetchone()
+        seed_uid = int(seed["id"]) if seed else None
+        imported = db.maybe_import_legacy_json(conn, user_id=seed_uid)
         if imported:
-            print(f"[webapp] imported {imported} cards from legacy JSON")
+            print(f"[webapp] imported {imported} cards from legacy JSON (owner={seed_uid})")
 
 
 _init()
+init_login_manager(app, DB_PATH)
+
+
+def _user_crops_dir(user_id: int) -> Path:
+    d = CROPS_DIR / f"u{user_id}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _user_input_dir(user_id: int) -> Path:
+    d = INPUT_DIR / f"u{user_id}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def get_tcg() -> TCGPlayerClient:
@@ -161,8 +190,75 @@ def get_csv_gen():
 # ----------------------------------------------------------------------
 
 @app.route("/")
+@login_required
 def index():
-    return render_template("index.html")
+    return render_template("index.html", username=current_user.username, is_admin=current_user.is_admin)
+
+
+# ----------------------------------------------------------------------
+# Auth
+# ----------------------------------------------------------------------
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for("index"))
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        with db.connect(DB_PATH) as conn:
+            row = db.verify_login(conn, username, password)
+        if row:
+            login_user(User(row), remember=True)
+            return redirect(request.args.get("next") or url_for("index"))
+        flash("Invalid username or password.")
+    return render_template("login.html")
+
+
+@app.route("/logout")
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for("login"))
+
+
+@app.route("/invite/<code>", methods=["GET", "POST"])
+def redeem_invite(code: str):
+    """Single-use invite redemption — the only path to a new account."""
+    with db.connect(DB_PATH) as conn:
+        invite = db.get_invite(conn, code)
+    valid = bool(invite) and invite["redeemed_by"] is None
+    if request.method == "POST" and valid:
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        if len(username) < 3 or len(password) < 8:
+            flash("Username must be ≥3 chars and password ≥8 chars.")
+        else:
+            with db.connect(DB_PATH) as conn:
+                user = db.redeem_invite(conn, code, username, password)
+            if user:
+                login_user(User(user), remember=True)
+                return redirect(url_for("index"))
+            flash("That username is taken, or the invite was just used.")
+    return render_template("invite.html", code=code, valid=valid)
+
+
+# ----------------------------------------------------------------------
+# Admin: mint invites from the UI
+# ----------------------------------------------------------------------
+
+@app.route("/api/invites", methods=["POST"])
+@login_required
+def api_create_invite():
+    if not current_user.is_admin:
+        abort(403)
+    body = request.get_json(silent=True) or {}
+    role = body.get("role", "member")
+    if role not in ("member", "admin"):
+        abort(400, "role must be 'member' or 'admin'")
+    with db.connect(DB_PATH) as conn:
+        code = db.create_invite(conn, role=role, created_by=current_user.id, note=body.get("note"))
+    return jsonify({"code": code, "url": url_for("redeem_invite", code=code, _external=True)})
 
 
 # ----------------------------------------------------------------------
@@ -170,6 +266,7 @@ def index():
 # ----------------------------------------------------------------------
 
 @app.route("/api/cards")
+@login_required
 def api_list_cards():
     sort = request.args.get("sort", "confidence_asc")
     needs_review_only = request.args.get("needs_review") == "1"
@@ -180,36 +277,40 @@ def api_list_cards():
             sort=sort,
             needs_review_only=needs_review_only,
             unidentified_only=unidentified_only,
+            user_id=current_user.id,
         )
-        stats = db.card_stats(conn)
+        stats = db.card_stats(conn, user_id=current_user.id)
     return jsonify({"cards": rows, "stats": stats})
 
 
 @app.route("/api/cards/<int:card_id>", methods=["GET"])
+@login_required
 def api_get_card(card_id: int):
     with db.connect(DB_PATH) as conn:
-        card = db.get_card(conn, card_id)
+        card = db.get_card(conn, card_id, user_id=current_user.id)
     if not card:
         abort(404)
     return jsonify(card)
 
 
 @app.route("/api/cards/<int:card_id>", methods=["PATCH"])
+@login_required
 def api_patch_card(card_id: int):
     patch = request.get_json(silent=True) or {}
     with db.connect(DB_PATH) as conn:
-        card = db.update_card(conn, card_id, patch)
+        card = db.update_card(conn, card_id, patch, user_id=current_user.id)
     if not card:
         abort(404)
     return jsonify(card)
 
 
 @app.route("/api/cards/bulk", methods=["POST"])
+@login_required
 def api_bulk_update_cards():
     """Bulk update — paste a JSON list with crop_path keys to apply identifications.
 
     Body:
-      [{"crop_path": "output/crops/page01_r0c0.jpg", "name": "Charizard", ...}, ...]
+      [{"crop_path": "output/crops/u1/page01_r0c0.jpg", "name": "Charizard", ...}, ...]
     """
     body = request.get_json(silent=True) or []
     if not isinstance(body, list):
@@ -221,11 +322,15 @@ def api_bulk_update_cards():
             crop_path = entry.get("crop_path")
             if not crop_path:
                 continue
-            row = conn.execute("SELECT id FROM cards WHERE crop_path = ?", (crop_path,)).fetchone()
+            # Scope by owner: only match the caller's own crop rows.
+            row = conn.execute(
+                "SELECT id FROM cards WHERE crop_path = ? AND user_id = ?",
+                (crop_path, current_user.id),
+            ).fetchone()
             if not row:
                 continue
             patch = {k: v for k, v in entry.items() if k != "crop_path"}
-            db.update_card(conn, int(row["id"]), patch)
+            db.update_card(conn, int(row["id"]), patch, user_id=current_user.id)
             applied += 1
     return jsonify({"applied": applied})
 
@@ -235,11 +340,13 @@ def api_bulk_update_cards():
 # ----------------------------------------------------------------------
 
 @app.route("/api/grids/upload", methods=["POST"])
+@login_required
 def api_upload_grid():
     files = request.files.getlist("file") or []
     if not files:
         abort(400, "no file uploaded")
 
+    uid = current_user.id
     sg = get_split_grids()
     total_crops = 0
     grids_added = []
@@ -249,17 +356,17 @@ def api_upload_grid():
         if ext not in ALLOWED_EXT:
             continue
         safe_name = _safe_filename(file.filename or "grid.jpg")
-        dest = INPUT_DIR / safe_name
+        dest = _user_input_dir(uid) / safe_name
         file.save(dest)
 
-        n = _split_and_record(sg, dest)
+        n = _split_and_record(sg, dest, uid)
         total_crops += n
         grids_added.append({"filename": safe_name, "crops": n})
 
     return jsonify({"grids": grids_added, "total_crops": total_crops})
 
 
-def _split_and_record(sg, grid_path: Path) -> int:
+def _split_and_record(sg, grid_path: Path, user_id: int) -> int:
     img = cv2.imread(str(grid_path))
     if img is None:
         return 0
@@ -268,17 +375,20 @@ def _split_and_record(sg, grid_path: Path) -> int:
     print(f"[split] {grid_path.name}: {sum(1 for c in cells if c is not None)} crops via {method}", file=sys.stderr)
 
     stem = grid_path.stem
+    crops_dir = _user_crops_dir(user_id)
+    # Namespace the grid identity by owner so two users can both upload "page01".
+    grid_key = f"u{user_id}/{stem}"
     written = 0
     with db.connect(DB_PATH) as conn:
-        grid_id = db.get_or_create_grid(conn, stem, str(grid_path.relative_to(ROOT)))
+        grid_id = db.get_or_create_grid(conn, grid_key, str(grid_path.relative_to(ROOT)), user_id=user_id)
         for idx, cell in enumerate(cells):
             if cell is None:
                 continue
             r, c = divmod(idx, 3)
-            out_path = CROPS_DIR / f"{stem}_r{r}c{c}.jpg"
+            out_path = crops_dir / f"{stem}_r{r}c{c}.jpg"
             cv2.imwrite(str(out_path), cell, [cv2.IMWRITE_JPEG_QUALITY, 92])
             rel = str(out_path.relative_to(ROOT))
-            db.insert_card_stub(conn, grid_id, rel, r, c)
+            db.insert_card_stub(conn, grid_id, rel, r, c, user_id=user_id)
             written += 1
         db.update_grid_count(conn, grid_id)
     return written
@@ -289,9 +399,11 @@ def _split_and_record(sg, grid_path: Path) -> int:
 # ----------------------------------------------------------------------
 
 @app.route("/api/cards/<int:card_id>/price", methods=["POST"])
+@login_required
 def api_price_card(card_id: int):
+    uid = current_user.id
     with db.connect(DB_PATH) as conn:
-        card = db.get_card(conn, card_id)
+        card = db.get_card(conn, card_id, user_id=uid)
     if not card:
         abort(404)
     if not card.get("name"):
@@ -299,7 +411,7 @@ def api_price_card(card_id: int):
     try:
         result = _price_card(card)
         with db.connect(DB_PATH) as conn:
-            updated = db.update_card(conn, card_id, result)
+            updated = db.update_card(conn, card_id, result, user_id=uid)
         return jsonify(updated)
     except Exception as exc:
         traceback.print_exc()
@@ -307,7 +419,9 @@ def api_price_card(card_id: int):
 
 
 @app.route("/api/pricing/run-all", methods=["POST"])
+@login_required
 def api_run_pricing_all():
+    uid = current_user.id
     use_terapeak = request.args.get("terapeak") == "1" or (request.get_json(silent=True) or {}).get("terapeak")
     with _job_lock:
         if _job_state["running"]:
@@ -335,7 +449,7 @@ def api_run_pricing_all():
 
         try:
             with db.connect(DB_PATH) as conn:
-                cards = db.list_cards(conn, sort="newest")
+                cards = db.list_cards(conn, sort="newest", user_id=uid)
             targets = [c for c in cards if c.get("name")]
             total_units = len(targets) * (2 if terapeak_on else 1)
             _job_state["total"] = total_units
@@ -365,7 +479,7 @@ def api_run_pricing_all():
                         with resolved_lock:
                             resolved_cards[int(card["id"])] = tcg_card
                     with db.connect(DB_PATH) as conn:
-                        db.update_card(conn, int(card["id"]), patch)
+                        db.update_card(conn, int(card["id"]), patch, user_id=uid)
                     # Build the Terapeak query immediately so Pass 2 can drain.
                     if terapeak_on:
                         set_name = ((tcg_card or {}).get("set") or {}).get("name") or card.get("set_name") or ""
@@ -402,7 +516,7 @@ def api_run_pricing_all():
                             tp_count = res.get("count", 0)
                             try:
                                 with db.connect(DB_PATH) as conn:
-                                    row = db.get_card(conn, card_id) or {}
+                                    row = db.get_card(conn, card_id, user_id=uid) or {}
                                 result = aggregate(
                                     tcgplayer_market=row.get("tcgplayer_market"),
                                     ebay_median_30d=row.get("ebay_median_30d"),
@@ -421,7 +535,7 @@ def api_run_pricing_all():
                                     "pricing_notes": result.notes or row.get("pricing_notes"),
                                 }
                                 with db.connect(DB_PATH) as conn:
-                                    db.update_card(conn, card_id, patch)
+                                    db.update_card(conn, card_id, patch, user_id=uid)
                             except Exception as exc:
                                 print(f"[terapeak merge] id={card_id}: {exc}", file=sys.stderr)
                         pass2_progress[0] += 1
@@ -481,12 +595,14 @@ def api_run_pricing_all():
 
 
 @app.route("/api/terapeak/status")
+@login_required
 def api_terapeak_status():
     state_path = ROOT / os.getenv("TERAPEAK_STATE_PATH", "output/cache/terapeak_state.json")
     return jsonify({"logged_in": state_path.exists(), "state_path": str(state_path)})
 
 
 @app.route("/api/pricing/status")
+@login_required
 def api_pricing_status():
     return jsonify(_job_state)
 
@@ -673,13 +789,17 @@ def _cards_payload(cards: list[dict]) -> list[dict]:
 
 
 @app.route("/api/export/csvs", methods=["POST"])
+@login_required
 def api_export_csvs():
+    uid = current_user.id
     gc = get_csv_gen()
     with db.connect(DB_PATH) as conn:
-        cards = db.list_cards(conn, sort="newest")
+        cards = db.list_cards(conn, sort="newest", user_id=uid)
     payload = _cards_payload(cards)
 
-    CSVS_DIR.mkdir(parents=True, exist_ok=True)
+    # CSVs are per-user so one seller's export can't overwrite another's.
+    out_dir = CSVS_DIR / f"u{uid}"
+    out_dir.mkdir(parents=True, exist_ok=True)
     written = []
     for filename, rows_fn in (
         ("tcgplayer_bulk.csv", gc.tcgplayer_rows),
@@ -688,7 +808,7 @@ def api_export_csvs():
     ):
         rows = rows_fn(payload)
         # Use pandas only when present; otherwise write naively.
-        path = CSVS_DIR / filename
+        path = out_dir / filename
         _write_csv(path, rows)
         written.append({"file": str(path.relative_to(ROOT)), "rows": len(rows)})
     return jsonify({"written": written})
@@ -707,9 +827,11 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
 
 
 @app.route("/api/cards/<int:card_id>/upload-image", methods=["POST"])
+@login_required
 def api_upload_card_image(card_id: int):
+    uid = current_user.id
     with db.connect(DB_PATH) as conn:
-        card = db.get_card(conn, card_id)
+        card = db.get_card(conn, card_id, user_id=uid)
     if not card:
         abort(404)
 
@@ -719,7 +841,7 @@ def api_upload_card_image(card_id: int):
         crop = ROOT / card["crop_path"]
         url = cloudinary_client.upload(str(crop))
         with db.connect(DB_PATH) as conn:
-            updated = db.update_card(conn, card_id, {"image_url": url})
+            updated = db.update_card(conn, card_id, {"image_url": url}, user_id=uid)
         return jsonify(updated)
     except Exception as exc:
         traceback.print_exc()
@@ -731,6 +853,7 @@ def api_upload_card_image(card_id: int):
 # ----------------------------------------------------------------------
 
 @app.route("/api/publish/status")
+@login_required
 def api_publish_status():
     """Readiness probe for each site + the current publish job state."""
     # eBay: official API — are we authorized?
@@ -757,13 +880,16 @@ def api_publish_status():
 
 
 @app.route("/api/publish/job-status")
+@login_required
 def api_publish_job_status():
     return jsonify(_publish_state)
 
 
 @app.route("/api/publish/ebay", methods=["POST"])
+@login_required
 def api_publish_ebay():
     """Publish every eligible card as a live eBay listing (background job)."""
+    uid = current_user.id
     with _publish_lock:
         if _publish_state["running"]:
             return jsonify({"error": "a publish job is already running"}), 409
@@ -780,7 +906,7 @@ def api_publish_ebay():
                 return
 
             with db.connect(DB_PATH) as conn:
-                cards = _cards_payload(db.list_cards(conn, sort="newest"))
+                cards = _cards_payload(db.list_cards(conn, sort="newest", user_id=uid))
             eligible = [c for c in cards if c.get("final_price") and c.get("image_url")]
             _publish_state["total"] = len(eligible)
 
@@ -797,14 +923,14 @@ def api_publish_ebay():
                         "listed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     }
                     with db.connect(DB_PATH) as conn:
-                        db.update_card(conn, int(card["id"]), patch)
+                        db.update_card(conn, int(card["id"]), patch, user_id=uid)
                 except EbayUserNotAuthorized as exc:
                     _publish_state["message"] = str(exc)
                     return
                 except EbayListingError as exc:
                     print(f"[publish ebay] FAILED {title}: {exc}", file=sys.stderr)
                     with db.connect(DB_PATH) as conn:
-                        db.update_card(conn, int(card["id"]), {"ebay_listing_status": f"error: {exc}"[:200]})
+                        db.update_card(conn, int(card["id"]), {"ebay_listing_status": f"error: {exc}"[:200]}, user_id=uid)
                 except Exception as exc:  # pragma: no cover
                     print(f"[publish ebay] error {title}: {exc}", file=sys.stderr)
                 finally:
@@ -820,8 +946,10 @@ def api_publish_ebay():
 
 
 @app.route("/api/publish/portal", methods=["POST"])
+@login_required
 def api_publish_portal():
     """Generate the site's CSV from the DB and upload it via headless browser."""
+    uid = current_user.id
     body = request.get_json(silent=True) or {}
     site = body.get("site") or request.args.get("site")
     if site not in ("tcgplayer", "whatnot"):
@@ -836,15 +964,16 @@ def api_publish_portal():
         try:
             gc = get_csv_gen()
             with db.connect(DB_PATH) as conn:
-                payload = _cards_payload(db.list_cards(conn, sort="newest"))
-            CSVS_DIR.mkdir(parents=True, exist_ok=True)
+                payload = _cards_payload(db.list_cards(conn, sort="newest", user_id=uid))
+            out_dir = CSVS_DIR / f"u{uid}"
+            out_dir.mkdir(parents=True, exist_ok=True)
             if site == "tcgplayer":
                 filename, rows_fn = "tcgplayer_bulk.csv", gc.tcgplayer_rows
                 from lib.tcgplayer_lister import TCGPlayerLister as Lister
             else:
                 filename, rows_fn = "whatnot_seller_hub.csv", gc.whatnot_rows
                 from lib.whatnot_lister import WhatnotLister as Lister
-            path = CSVS_DIR / filename
+            path = out_dir / filename
             _write_csv(path, rows_fn(payload))
 
             _publish_state["message"] = f"uploading {filename} to {site}…"
@@ -868,14 +997,31 @@ def api_publish_portal():
 # Static crops + CSV downloads
 # ----------------------------------------------------------------------
 
+def _authorize_user_path(filename: str) -> None:
+    """Crops/CSVs live under a per-user ``u<id>/`` prefix. Only let a user fetch
+    their own (admins may fetch anyone's). 403 otherwise."""
+    if getattr(current_user, "is_admin", False):
+        return
+    expected = f"u{current_user.id}/"
+    # Normalise leading "./" and any stray separators.
+    norm = filename.lstrip("/")
+    if not norm.startswith(expected):
+        abort(403)
+
+
 @app.route("/crops/<path:filename>")
 @app.route("/output/crops/<path:filename>")
+@login_required
 def serve_crop(filename: str):
+    _authorize_user_path(filename)
     return send_from_directory(CROPS_DIR, filename)
 
 
 @app.route("/csvs/<path:filename>")
+@app.route("/output/csvs/<path:filename>")
+@login_required
 def download_csv(filename: str):
+    _authorize_user_path(filename)
     path = CSVS_DIR / filename
     if not path.exists():
         abort(404)

@@ -8,7 +8,14 @@
 </head>
 <body>
   <header>
-    <h1>Pokémon bulk lister</h1>
+    <div class="header-top">
+      <h1>Pokémon bulk lister</h1>
+      <div class="user-box">
+        <span class="muted small">Signed in as <strong>{{ username }}</strong></span>
+        {% if is_admin %}<button id="invite-btn" class="link-btn" type="button">+ Invite</button>{% endif %}
+        <a href="{{ url_for('logout') }}" class="link-btn">Log out</a>
+      </div>
+    </div>
     <div id="stats" class="stats"></div>
   </header>
 

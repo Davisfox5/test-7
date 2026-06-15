@@ -51,6 +51,27 @@ python -m webapp.app
 # http://localhost:5050
 ```
 
+### Accounts (multi-user, invite-only)
+
+The web app is multi-user: every account sees only its own cards, grids, and
+exports. There is **no open sign-up** — accounts are created from single-use
+invite codes, which suits a small private group.
+
+```bash
+# 1. Set a session key (any install you share must have this):
+python -c "import secrets; print(secrets.token_hex(32))"   # -> FLASK_SECRET_KEY in .env
+
+# 2. Create the first admin (prompts for a password):
+python -m webapp.manage create-admin <username>
+
+# 3. Mint an invite for each additional user:
+python -m webapp.manage invite            # prints a single-use /invite/<code> link
+#    (admins can also mint invites from the UI via the "+ Invite" button)
+```
+
+New users open `/invite/<code>`, choose a username + password, and are signed in.
+Sign in at `/login`; log out from the header.
+
 Data lives at `output/db.sqlite` (auto-created; auto-imports any existing
 `output/cards.json` / `output/cards_priced.json` on first launch). Drop binder
 photos into the drop-zone — they're split into crops automatically and inserted

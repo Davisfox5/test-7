@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Accept invite · Pokémon bulk lister</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <h1>Create your account</h1>
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}<div class="auth-error">{{ messages[0] }}</div>{% endif %}
+      {% endwith %}
+      {% if valid %}
+        <p class="muted">You've been invited. Pick a username and password.</p>
+        <form method="post" class="auth-form">
+          <label>Username <input name="username" autocomplete="username" minlength="3" autofocus required /></label>
+          <label>Password <input name="password" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <button type="submit">Create account</button>
+        </form>
+      {% else %}
+        <div class="auth-error">This invite link is invalid or has already been used.</div>
+        <p class="muted small"><a href="{{ url_for('login') }}">Back to sign in</a></p>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

@@ -422,6 +422,24 @@ async function pollPublishJob() {
   tick();
 }
 
+// ---------------------------------------------------------------- invites (admin)
+function setupInvite() {
+  const btn = $("#invite-btn");
+  if (!btn) return;  // non-admins don't see the button
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    try {
+      const data = await api("/api/invites", { method: "POST", body: JSON.stringify({ role: "member" }) });
+      // Offer the redeem URL for copy/paste.
+      window.prompt("Single-use invite link — send it to the new user:", data.url);
+    } catch (err) {
+      alert(`Could not create invite: ${err.message}`);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 // ---------------------------------------------------------------- init
 function setupKeyboard() {
   document.addEventListener("keydown", ev => {
@@ -436,5 +454,6 @@ setupTable();
 setupModal();
 setupToolbar();
 setupPublish();
+setupInvite();
 setupKeyboard();
 loadCards();

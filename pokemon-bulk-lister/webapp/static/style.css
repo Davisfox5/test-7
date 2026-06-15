@@ -139,3 +139,67 @@ td.actions button { padding: 3px 8px; font-size: 12px; }
 .prices-grid div strong { color: var(--fg); display: block; }
 .actions { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
 #bulk-modal .modal-body { flex-direction: column; }
+
+/* ---- Auth + header user box (Stage 1) ---- */
+header { flex-direction: column; align-items: stretch; gap: 8px; }
+.header-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+.user-box { display: flex; align-items: center; gap: 12px; }
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 13px;
+  text-decoration: none;
+  padding: 0;
+}
+.link-btn:hover { color: var(--accent-hover); text-decoration: underline; }
+
+.auth-wrap {
+  min-height: 80vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.auth-card {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 28px 32px;
+  width: 320px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+.auth-card h1 { margin-bottom: 4px; }
+.auth-form { display: flex; flex-direction: column; gap: 12px; margin: 18px 0 12px; }
+.auth-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.auth-form input {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 14px;
+}
+.auth-form button {
+  margin-top: 4px;
+  padding: 9px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.auth-form button:hover { background: var(--accent-hover); }
+.auth-error {
+  background: var(--row-flag);
+  color: var(--row-flag-text);
+  border: 1px solid #f3c0c0;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  margin-top: 10px;
+}

@@ -42,6 +42,7 @@ from flask import (
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from lib.cardmarket_client import CardmarketPriceGuide  # noqa: E402
 from lib.ebay_client import EbayAuthError, EbayClient  # noqa: E402
 from lib.pricing import aggregate  # noqa: E402
 from lib.tcgplayer_client import TCGPlayerClient  # noqa: E402
@@ -76,6 +77,15 @@ CSVS_DIR = OUTPUT_DIR / "csvs"
 DB_PATH = str(OUTPUT_DIR / "db.sqlite")
 
 EUR_USD_RATE = float(os.getenv("EUR_USD_RATE", "1.08"))
+
+# Cardmarket daily price-guide JSON as a fallback signal when pokemontcg.io
+# has no data (its catalog lags new sets and its CDN 404s under load).
+CARDMARKET_FALLBACK = os.getenv("CARDMARKET_FALLBACK", "1") == "1"
+
+# Cards confidently priced below this skip the Terapeak scrape in run-all —
+# it's slow (~5s/card) and carries account risk, and a 365-day comp adds
+# nothing to a $0.15 bulk common. 0 disables the gate.
+TERAPEAK_MIN_VALUE = float(os.getenv("TERAPEAK_MIN_VALUE", "3.0"))
 
 ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
 
@@ -131,6 +141,16 @@ def get_ebay() -> EbayClient:
     if _ebay_client is None:
         _ebay_client = EbayClient()
     return _ebay_client
+
+
+_cardmarket_guide: Optional[CardmarketPriceGuide] = None
+
+
+def get_cardmarket() -> CardmarketPriceGuide:
+    global _cardmarket_guide
+    if _cardmarket_guide is None:
+        _cardmarket_guide = CardmarketPriceGuide(cache_dir=str(OUTPUT_DIR / "cache" / "cardmarket"))
+    return _cardmarket_guide
 
 
 def get_split_grids():
@@ -348,20 +368,31 @@ def api_run_pricing_all():
             def price_one_pass1(card: dict) -> None:
                 """TCG + CM + eBay-MI for one card."""
                 tcg_card = None
+                skip_terapeak = False
                 try:
                     patch, tcg_card = _price_card_pass1(card)
                     with db.connect(DB_PATH) as conn:
                         db.update_card(conn, int(card["id"]), patch)
+                    # Value gate: a confident sub-threshold price gains nothing
+                    # from a slow, account-risky Terapeak scrape.
+                    fp = patch.get("final_price")
+                    skip_terapeak = (
+                        TERAPEAK_MIN_VALUE > 0
+                        and fp is not None
+                        and fp < TERAPEAK_MIN_VALUE
+                        and not patch.get("needs_review")
+                    )
                 except Exception as exc:
                     print(f"[pricing pass1] {card.get('name')}: {exc}", file=sys.stderr)
                 finally:
-                    # ALWAYS enqueue the Terapeak query — even on error — or the
+                    # ALWAYS enqueue the Terapeak entry — even on error — or the
                     # drain thread waits forever for this card and the job hangs
                     # with running=True (frontend button stays disabled).
+                    # None means "skip this card" and is counted, not scraped.
                     if terapeak_on:
                         set_name = ((tcg_card or {}).get("set") or {}).get("name") or card.get("set_name") or ""
                         bits = [card.get("name") or "", set_name, card.get("card_number") or "", "pokemon"]
-                        query = " ".join(b for b in bits if b)
+                        query = None if skip_terapeak else " ".join(b for b in bits if b)
                         with queries_lock:
                             terapeak_queries_ready[int(card["id"])] = query
                     with progress_lock:
@@ -444,6 +475,11 @@ def api_run_pricing_all():
                                 ]
                             for cid, q in ready:
                                 submitted.add(cid)
+                                if q is None:  # value-gated skip — count it, don't scrape
+                                    with progress_lock:
+                                        pass2_progress[0] += 1
+                                    update_message()
+                                    continue
                                 fut = pool.submit(q, 365)
                                 futures[fut] = cid
                             if not ready:
@@ -548,6 +584,17 @@ def _price_card(card: dict, terapeak=None, return_card: bool = False):
         except Exception as exc:
             tcg_error = str(exc)
             time.sleep(0.6)
+    # Cardmarket daily price-guide fallback: only when pokemontcg.io gave no
+    # Cardmarket price. Name-only match, so the guide refuses ambiguous cards.
+    cm_fallback_note: Optional[str] = None
+    if cm_eur is None and CARDMARKET_FALLBACK and name:
+        try:
+            cm_eur, cm_fallback_note = get_cardmarket().lookup_trend_eur(name, is_holo=is_holo)
+            if cm_eur is None:
+                cm_fallback_note = None  # refusal reasons aren't worth surfacing per-card
+        except Exception as exc:
+            print(f"[cardmarket] {name}: {exc}", file=sys.stderr)
+
     cm_usd = round(cm_eur * EUR_USD_RATE, 2) if cm_eur else None
 
     # Accuracy guard: if the match came from a name-only fallback (set_code
@@ -603,6 +650,8 @@ def _price_card(card: dict, terapeak=None, return_card: bool = False):
         notes_parts.append(f"⚠ {match_warning}")
     if match_level and match_level != "exact":
         notes_parts.append(f"match: {match_level}")
+    if cm_fallback_note:
+        notes_parts.append(cm_fallback_note)
 
     # A match warning forces low confidence + review regardless of source agreement,
     # because high source agreement on a wrong card is the worst case (looks reliable

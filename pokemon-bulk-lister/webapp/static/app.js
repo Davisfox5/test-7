@@ -10,6 +10,7 @@ const state = {
   needsReview: false,
   unidentified: false,
   editing: null,
+  selected: new Set(),
 };
 
 // ---------------------------------------------------------------- network
@@ -66,8 +67,10 @@ function renderRow(card) {
   const ebayCell = ebay.value == null
     ? `<span class="muted">—</span>`
     : `${fmt(ebay.value)}<div class="muted small">${ebay.window} · n=${ebay.count}</div>`;
+  const checked = state.selected.has(card.id) ? "checked" : "";
   return `
     <tr class="${flagClass}" data-id="${card.id}">
+      <td class="select"><input type="checkbox" data-act="select" ${checked} /></td>
       <td class="thumb"><img src="/${card.crop_path}" alt="" loading="lazy" /></td>
       <td>
         <strong>${escapeHtml(card.name) || "<span class='muted'>(unidentified)</span>"}</strong>
@@ -92,9 +95,34 @@ function renderCards() {
   const body = $("#cards-body");
   if (!state.cards.length) {
     body.innerHTML = `<tr><td colspan="10" class="muted">No cards yet. Upload a grid above.</td></tr>`;
+    updateBundleButton();
     return;
   }
+  // Drop selections that aren't in the current view.
+  const visible = new Set(state.cards.map(c => c.id));
+  for (const id of Array.from(state.selected)) {
+    if (!visible.has(id)) state.selected.delete(id);
+  }
   body.innerHTML = state.cards.map(renderRow).join("");
+  syncSelectAllCheckbox();
+  updateBundleButton();
+}
+
+function syncSelectAllCheckbox() {
+  const all = $("#select-all");
+  if (!all) return;
+  const total = state.cards.length;
+  const sel = state.cards.filter(c => state.selected.has(c.id)).length;
+  all.checked = total > 0 && sel === total;
+  all.indeterminate = sel > 0 && sel < total;
+}
+
+function updateBundleButton() {
+  const btn = $("#bundle-btn");
+  if (!btn) return;
+  const n = state.selected.size;
+  btn.textContent = `Bundle selected (${n})`;
+  btn.disabled = n < 2;
 }
 
 function escapeHtml(s) {
@@ -152,6 +180,16 @@ function setupDropzone() {
 // ---------------------------------------------------------------- table interactions
 function setupTable() {
   $("#cards-body").addEventListener("click", async ev => {
+    const cb = ev.target.closest("input[type=checkbox][data-act=select]");
+    if (cb) {
+      const tr = ev.target.closest("tr");
+      const id = parseInt(tr.dataset.id, 10);
+      if (cb.checked) state.selected.add(id);
+      else state.selected.delete(id);
+      syncSelectAllCheckbox();
+      updateBundleButton();
+      return;
+    }
     const btn = ev.target.closest("button");
     if (!btn) return;
     const tr = ev.target.closest("tr");
@@ -168,6 +206,12 @@ function setupTable() {
         btn.disabled = false; btn.textContent = "Price";
       }
     }
+  });
+
+  $("#select-all").addEventListener("change", ev => {
+    if (ev.target.checked) state.cards.forEach(c => state.selected.add(c.id));
+    else state.cards.forEach(c => state.selected.delete(c.id));
+    renderCards();
   });
 }
 
@@ -280,6 +324,111 @@ function setupModal() {
   $("#modal-upload-btn").addEventListener("click", uploadCloudinary);
 }
 
+// ---------------------------------------------------------------- bundle modal
+function selectedCards() {
+  return state.cards.filter(c => state.selected.has(c.id));
+}
+
+function bundleSum() {
+  return selectedCards().reduce((acc, c) => acc + (c.final_price || 0), 0);
+}
+
+function bundlePricePreview() {
+  const form = $("#bundle-form");
+  if (!form) return 0;
+  const discount = form.discount.value;
+  const sum = bundleSum();
+  if (discount === "custom") {
+    return parseFloat(form.price.value) || 0;
+  }
+  return Math.round(sum * (1 - parseFloat(discount)) * 100) / 100;
+}
+
+function refreshBundlePreview() {
+  $("#bundle-count").textContent = state.selected.size;
+  $("#bundle-sum").textContent = `$${bundleSum().toFixed(2)}`;
+  $("#bundle-price-preview").textContent = `$${bundlePricePreview().toFixed(2)}`;
+}
+
+function openBundle() {
+  if (state.selected.size < 2) return;
+  const form = $("#bundle-form");
+  form.reset();
+  form.discount.value = "0.30";
+  form.quantity.value = "1";
+  $("#bundle-price-row").classList.add("hidden");
+  $("#bundle-status").textContent = "";
+  refreshBundlePreview();
+  $("#bundle-modal").classList.remove("hidden");
+}
+
+function closeBundle() {
+  $("#bundle-modal").classList.add("hidden");
+}
+
+function setupBundleModal() {
+  $("#bundle-close").addEventListener("click", closeBundle);
+  $("#bundle-modal").addEventListener("click", ev => {
+    if (ev.target.id === "bundle-modal") closeBundle();
+  });
+  const form = $("#bundle-form");
+  form.discount.addEventListener("change", () => {
+    const custom = form.discount.value === "custom";
+    $("#bundle-price-row").classList.toggle("hidden", !custom);
+    if (custom && !form.price.value) {
+      form.price.value = (bundleSum() * 0.7).toFixed(2);
+    }
+    refreshBundlePreview();
+  });
+  form.price.addEventListener("input", refreshBundlePreview);
+
+  form.addEventListener("submit", async ev => {
+    ev.preventDefault();
+    const ids = Array.from(state.selected);
+    if (ids.length < 2) {
+      $("#bundle-status").textContent = "Select at least 2 cards.";
+      return;
+    }
+    const payload = {
+      card_ids: ids,
+      quantity: parseInt(form.quantity.value, 10) || 1,
+    };
+    const title = form.title.value.trim();
+    if (title) payload.title = title;
+    const note = form.note.value.trim();
+    if (note) payload.note = note;
+    const slug = form.slug.value.trim();
+    if (slug) payload.slug = slug;
+    if (form.discount.value === "custom") {
+      payload.price = parseFloat(form.price.value) || 0;
+    } else {
+      payload.discount = parseFloat(form.discount.value);
+    }
+
+    const submitBtn = form.querySelector('button[type="submit"]');
+    submitBtn.disabled = true;
+    const origLabel = submitBtn.textContent;
+    submitBtn.textContent = "Exporting…";
+    $("#bundle-status").textContent = "";
+    try {
+      const data = await api("/api/export/lot", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      const links = data.written.map(w => `<a href="/${w.file}" target="_blank">${w.file}</a>`).join(" · ");
+      const s = data.summary || {};
+      $("#bundle-status").innerHTML =
+        `Wrote ${data.written.length} lot CSV(s) — bundle price $${(s.bundle_price ?? 0).toFixed(2)} (sum was $${(s.sum_of_final_prices ?? 0).toFixed(2)}). ${links}`;
+      $("#upload-status").innerHTML = `Lot exported: ${links}`;
+    } catch (err) {
+      $("#bundle-status").textContent = `Failed: ${err.message}`;
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = origLabel;
+    }
+  });
+}
+
 // ---------------------------------------------------------------- toolbar
 function setupToolbar() {
   $("#sort").addEventListener("change", e => { state.sort = e.target.value; loadCards(); });
@@ -309,6 +458,8 @@ function setupToolbar() {
       el.textContent = "(first run will prompt login)";
     }
   }).catch(() => {});
+
+  $("#bundle-btn").addEventListener("click", openBundle);
 
   $("#export-csv-btn").addEventListener("click", async () => {
     const btn = $("#export-csv-btn");
@@ -427,6 +578,7 @@ function setupKeyboard() {
   document.addEventListener("keydown", ev => {
     if (ev.key === "Escape") {
       closeEdit();
+      closeBundle();
     }
   });
 }
@@ -434,6 +586,7 @@ function setupKeyboard() {
 setupDropzone();
 setupTable();
 setupModal();
+setupBundleModal();
 setupToolbar();
 setupPublish();
 setupKeyboard();

@@ -43,6 +43,7 @@
       </label>
       <button id="run-pricing-btn">Run pricing (all)</button>
       <button id="export-csv-btn">Export CSVs</button>
+      <button id="bundle-btn" disabled title="Select 2+ cards to bundle as a single lot listing">Bundle selected (0)</button>
     </div>
   </section>
 
@@ -76,6 +77,7 @@
     <table id="cards-table">
       <thead>
         <tr>
+          <th><input type="checkbox" id="select-all" title="Select all visible" /></th>
           <th>Crop</th>
           <th>Identified</th>
           <th>Set / # / Rarity</th>
@@ -87,7 +89,7 @@
           <th>Actions</th>
         </tr>
       </thead>
-      <tbody id="cards-body"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
+      <tbody id="cards-body"><tr><td colspan="10" class="muted">Loading…</td></tr></tbody>
     </table>
   </section>
 
@@ -130,6 +132,58 @@
     </div>
   </div>
 
+
+  <!-- Bundle-as-lot modal -->
+  <div id="bundle-modal" class="modal hidden">
+    <div class="modal-card">
+      <header>
+        <h2>Bundle as one lot</h2>
+        <button id="bundle-close">×</button>
+      </header>
+      <div class="modal-body">
+        <form id="bundle-form">
+          <div class="bundle-summary">
+            <div><span class="muted">Cards selected:</span> <strong id="bundle-count">0</strong></div>
+            <div><span class="muted">Sum of final prices:</span> <strong id="bundle-sum">$0.00</strong></div>
+          </div>
+          <label>Lot title (optional — auto-generated if blank)
+            <input name="title" placeholder="e.g. Pokemon TCG Lot — 12 holos, Base/Jungle/Fossil" />
+          </label>
+          <label>Quick-sale discount
+            <select name="discount">
+              <option value="0.20">20% off sum (light discount)</option>
+              <option value="0.30" selected>30% off sum (recommended)</option>
+              <option value="0.40">40% off sum (move fast)</option>
+              <option value="0.50">50% off sum (fire sale)</option>
+              <option value="custom">Custom price…</option>
+            </select>
+          </label>
+          <label id="bundle-price-row" class="hidden">Custom bundle price (USD)
+            <input type="number" step="0.01" min="0" name="price" />
+          </label>
+          <label>Quantity (number of identical lots)
+            <input type="number" min="1" step="1" name="quantity" value="1" />
+          </label>
+          <label>Slug (used as folder name + SKU)
+            <input name="slug" placeholder="auto" />
+          </label>
+          <label>Extra note for description (optional)
+            <input name="note" placeholder="e.g. Smoke-free home, ships next business day." />
+          </label>
+          <div class="bundle-summary">
+            <div><span class="muted">Lot price preview:</span> <strong id="bundle-price-preview">$0.00</strong></div>
+          </div>
+          <div class="actions">
+            <button type="submit" class="primary">Export lot CSVs</button>
+            <span id="bundle-status" class="muted small"></span>
+          </div>
+          <p class="muted small">
+            One row per CSV is written to <code>output/csvs/lots/&lt;slug&gt;/</code>. TCGPlayer's bulk template requires a TCGplayer Id per row, so the TCGPlayer lot CSV is informational only — Whatnot and eBay accept lot listings natively.
+          </p>
+        </form>
+      </div>
+    </div>
+  </div>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>

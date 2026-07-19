@@ -153,6 +153,149 @@ def ebay_rows(cards: list[dict]) -> list[dict]:
     return rows
 
 
+def _lot_title(cards: list[dict], bundle: dict) -> str:
+    if bundle.get("title"):
+        return str(bundle["title"])
+    n = len(cards)
+    sets = sorted({c.get("set_name") for c in cards if c.get("set_name")})
+    if len(sets) == 1:
+        return f"Pokemon TCG Lot — {n} cards from {sets[0]}"
+    return f"Pokemon TCG Lot — {n} cards (mixed sets)"
+
+
+def _lot_description(cards: list[dict], bundle: dict) -> str:
+    n = len(cards)
+    sets = sorted({c.get("set_name") for c in cards if c.get("set_name") if c.get("set_name")})
+    holo_count = sum(1 for c in cards if c.get("is_holo"))
+    rarities = sorted({c.get("rarity") for c in cards if c.get("rarity")})
+
+    lines = [f"Bulk lot of {n} Pokémon TCG cards — priced to move."]
+    if sets:
+        lines.append("Sets: " + ", ".join(sets[:8]) + ("…" if len(sets) > 8 else ""))
+    if rarities:
+        lines.append("Rarities included: " + ", ".join(rarities))
+    if holo_count:
+        lines.append(f"Includes {holo_count} holo card(s).")
+    if bundle.get("note"):
+        lines.append(str(bundle["note"]))
+
+    lines.append("")
+    lines.append("Contents:")
+    for c in cards:
+        bits = [c.get("name") or "Unidentified"]
+        if c.get("card_number"):
+            bits.append(f"#{c['card_number']}")
+        if c.get("set_name"):
+            bits.append(c["set_name"])
+        if c.get("is_holo"):
+            bits.append("Holo")
+        cond = c.get("condition_guess")
+        if cond:
+            bits.append(f"({_condition_full(cond)})")
+        lines.append("• " + " ".join(bits))
+
+    lines.append("")
+    lines.append("English. Ships boxed with cards sleeved together to keep shipping low.")
+    return "\n".join(lines)
+
+
+def _lot_condition(cards: list[dict]) -> str:
+    """Worst condition wins so we don't oversell the lot."""
+    order = ["NM", "LP", "MP", "HP", "DMG"]
+    worst_idx = 0
+    for c in cards:
+        cg = (c.get("condition_guess") or "NM").upper()
+        if cg in order:
+            worst_idx = max(worst_idx, order.index(cg))
+    return _condition_full(order[worst_idx])
+
+
+def _lot_weight_oz(cards: list[dict]) -> int:
+    """Rough lot weight: ~0.06 oz per card + 4 oz of box/padding, min 6 oz."""
+    return max(6, int(round(len(cards) * 0.06 + 4)))
+
+
+def whatnot_lot_row(cards: list[dict], bundle: dict) -> dict:
+    price = float(bundle.get("price") or 0.0)
+    quantity = int(bundle.get("quantity") or 1)
+    sku = bundle.get("sku") or f"lot-{len(cards)}"
+    image_url = bundle.get("image_url") or next((c.get("image_url") for c in cards if c.get("image_url")), "")
+    return {
+        "Category": "Trading Cards",
+        "Sub Category": "Pokemon",
+        "Title": _lot_title(cards, bundle),
+        "Description": _lot_description(cards, bundle),
+        "Quantity": quantity,
+        "Type": "Buy it Now",
+        "Price": f"{price:.2f}",
+        "Shipping Profile": "4-8 oz" if len(cards) <= 30 else "8-16 oz",
+        "Offerable": "TRUE",
+        "Hazmat": "Not Hazmat",
+        "Condition": _lot_condition(cards),
+        "Cost Per Item": "",
+        "SKU": sku,
+        "Image URL 1": image_url,
+    }
+
+
+def ebay_lot_row(cards: list[dict], bundle: dict) -> dict:
+    price = float(bundle.get("price") or 0.0)
+    quantity = int(bundle.get("quantity") or 1)
+    sku = bundle.get("sku") or f"lot-{len(cards)}"
+    image_url = bundle.get("image_url") or next((c.get("image_url") for c in cards if c.get("image_url")), "")
+    oz = _lot_weight_oz(cards)
+    # eBay category 183469 = Collectible Card Games > Pokémon TCG > Mixed Card Lots.
+    return {
+        "Action": "Add",
+        "Custom label (SKU)": sku,
+        "Category ID": "183469",
+        "Title": _lot_title(cards, bundle)[:80],
+        "Condition ID": "3000",  # Used / mixed lots default to Used
+        "Format": "FixedPrice",
+        "Duration": "GTC",
+        "Start price": f"{price:.2f}",
+        "Quantity": quantity,
+        "Item photo URL": image_url,
+        "Description": _lot_description(cards, bundle),
+        "C:Game": "Pokémon TCG",
+        "C:Set": ", ".join(sorted({c.get("set_name", "") for c in cards if c.get("set_name")}))[:65],
+        "C:Features": "Holo Included" if any(c.get("is_holo") for c in cards) else "",
+        "C:Language": "English",
+        "C:Country/Region of Manufacture": "United States",
+        "Shipping type": "Calculated",
+        "Shipping service 1 option": "USPSGroundAdvantage",
+        "Weight major": str(oz // 16),
+        "Weight minor": str(oz % 16),
+        "Package type": "Package",
+        "Dispatch time max": "1",
+        "Returns accepted option": "ReturnsAccepted",
+        "Returns within option": "Days_30",
+        "Refund option": "MoneyBack",
+        "Return shipping cost paid by": "Buyer",
+    }
+
+
+def tcgplayer_lot_row(cards: list[dict], bundle: dict) -> dict:
+    """TCGPlayer's bulk staged-inventory CSV is single-product only.
+
+    There's no native lot format in that template, so we emit a single
+    informational row the user can hand-edit before uploading (or skip).
+    """
+    price = float(bundle.get("price") or 0.0)
+    return {
+        "TCGplayer Id": "",
+        "Product Line": "Pokemon",
+        "Set Name": "Mixed Lot",
+        "Product Name": _lot_title(cards, bundle),
+        "Number": "",
+        "Rarity": "",
+        "Condition": _lot_condition(cards),
+        "TCG Marketplace Price": f"{price:.2f}",
+        "Add to Quantity": int(bundle.get("quantity") or 1),
+        "Notes": "Lot — TCGplayer Id required; this row needs manual entry before upload.",
+    }
+
+
 def _description(c: dict) -> str:
     bits: list[str] = []
     name = c.get("name", "")

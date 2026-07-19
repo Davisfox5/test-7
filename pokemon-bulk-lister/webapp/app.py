@@ -684,6 +684,92 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
+@app.route("/api/export/lot", methods=["POST"])
+def api_export_lot():
+    """Bundle a set of cards into a single quick-sale listing per marketplace.
+
+    Body:
+      {
+        "card_ids": [int, ...],   # required, >= 2
+        "title":    str,          # optional, auto-generated otherwise
+        "price":    float,        # optional, defaults to 70% of sum(final_price)
+        "quantity": int,          # optional, defaults to 1
+        "discount": float,        # optional 0..1, used if price not provided (default 0.30)
+        "note":     str,          # optional extra line for the description
+        "slug":     str,          # optional folder name under output/csvs/lots/
+      }
+    """
+    gc = get_csv_gen()
+    body = request.get_json(silent=True) or {}
+    card_ids = body.get("card_ids") or []
+    if not isinstance(card_ids, list) or len(card_ids) < 2:
+        return jsonify({"error": "card_ids must be a list of 2 or more card IDs"}), 400
+
+    with db.connect(DB_PATH) as conn:
+        cards = [db.get_card(conn, int(cid)) for cid in card_ids]
+    cards = [c for c in cards if c]
+    if len(cards) < 2:
+        return jsonify({"error": "fewer than 2 cards resolved from card_ids"}), 400
+
+    sum_price = sum((c.get("final_price") or 0.0) for c in cards)
+    discount = float(body.get("discount") if body.get("discount") is not None else 0.30)
+    discount = max(0.0, min(0.9, discount))
+    default_price = round(sum_price * (1.0 - discount), 2) if sum_price > 0 else 0.0
+    price = float(body["price"]) if body.get("price") is not None else default_price
+
+    slug_raw = str(body.get("slug") or f"lot-{int(time.time())}")
+    slug = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in slug_raw).strip("-") or f"lot-{int(time.time())}"
+
+    bundle = {
+        "title": body.get("title"),
+        "price": price,
+        "quantity": int(body.get("quantity") or 1),
+        "note": body.get("note"),
+        "sku": slug,
+        "image_url": body.get("image_url"),
+    }
+
+    payload = []
+    for c in cards:
+        payload.append({
+            "crop_path": c["crop_path"],
+            "name": c.get("name") or "",
+            "set_name": c.get("set_name") or "",
+            "card_number": c.get("card_number") or "",
+            "rarity": c.get("rarity") or "",
+            "is_holo": bool(c.get("is_holo")),
+            "condition_guess": c.get("condition_guess") or "",
+            "image_url": c.get("image_url") or "",
+            "final_price": c.get("final_price"),
+        })
+
+    out_dir = CSVS_DIR / "lots" / slug
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    targets = (
+        ("whatnot_lot.csv", gc.whatnot_lot_row(payload, bundle)),
+        ("ebay_lot.csv", gc.ebay_lot_row(payload, bundle)),
+        ("tcgplayer_lot.csv", gc.tcgplayer_lot_row(payload, bundle)),
+    )
+    written = []
+    for filename, row in targets:
+        path = out_dir / filename
+        _write_csv(path, [row])
+        written.append({"file": str(path.relative_to(ROOT)), "rows": 1})
+
+    return jsonify({
+        "written": written,
+        "summary": {
+            "card_count": len(cards),
+            "sum_of_final_prices": round(sum_price, 2),
+            "bundle_price": round(price, 2),
+            "discount_applied": round(discount, 2) if body.get("price") is None else None,
+            "slug": slug,
+        },
+        "note": "TCGPlayer's bulk inventory CSV has no native lot row — the tcgplayer_lot.csv row needs a manual TCGplayer Id (or skip TCGPlayer for this lot).",
+    })
+
+
 @app.route("/api/cards/<int:card_id>/upload-image", methods=["POST"])
 def api_upload_card_image(card_id: int):
     with db.connect(DB_PATH) as conn:
@@ -853,7 +939,10 @@ def serve_crop(filename: str):
 
 
 @app.route("/csvs/<path:filename>")
+@app.route("/output/csvs/<path:filename>")
 def download_csv(filename: str):
+    if ".." in filename.split("/"):
+        abort(404)
     path = CSVS_DIR / filename
     if not path.exists():
         abort(404)

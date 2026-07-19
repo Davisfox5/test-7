@@ -316,13 +316,9 @@ def api_run_pricing_all():
         terapeak_on = use_terapeak
         pool = None
         terapeak_thread = None
-        # Resolved pokemontcg.io card objects, keyed by card_id. Filled during
-        # Pass 1, read by Pass 2 to build Terapeak queries — saves 153
-        # redundant API calls.
-        resolved_cards: dict[int, dict] = {}
-        resolved_lock = threading.Lock()
         pass1_progress = [0]
         pass2_progress = [0]
+        progress_lock = threading.Lock()
 
         try:
             with db.connect(DB_PATH) as conn:
@@ -339,35 +335,37 @@ def api_run_pricing_all():
             queries_lock = threading.Lock()
 
             def update_message():
-                p1 = pass1_progress[0]
-                p2 = pass2_progress[0]
-                if terapeak_on:
-                    _job_state["progress"] = p1 + p2
-                    _job_state["message"] = f"TCG/CM {p1}/{len(targets)} · Terapeak {p2}/{len(targets)}"
-                else:
-                    _job_state["progress"] = p1
-                    _job_state["message"] = f"TCG/CM {p1}/{len(targets)}"
+                with progress_lock:
+                    p1 = pass1_progress[0]
+                    p2 = pass2_progress[0]
+                    if terapeak_on:
+                        _job_state["progress"] = p1 + p2
+                        _job_state["message"] = f"TCG/CM {p1}/{len(targets)} · Terapeak {p2}/{len(targets)}"
+                    else:
+                        _job_state["progress"] = p1
+                        _job_state["message"] = f"TCG/CM {p1}/{len(targets)}"
 
             def price_one_pass1(card: dict) -> None:
                 """TCG + CM + eBay-MI for one card."""
+                tcg_card = None
                 try:
                     patch, tcg_card = _price_card_pass1(card)
-                    if tcg_card is not None:
-                        with resolved_lock:
-                            resolved_cards[int(card["id"])] = tcg_card
                     with db.connect(DB_PATH) as conn:
                         db.update_card(conn, int(card["id"]), patch)
-                    # Build the Terapeak query immediately so Pass 2 can drain.
+                except Exception as exc:
+                    print(f"[pricing pass1] {card.get('name')}: {exc}", file=sys.stderr)
+                finally:
+                    # ALWAYS enqueue the Terapeak query — even on error — or the
+                    # drain thread waits forever for this card and the job hangs
+                    # with running=True (frontend button stays disabled).
                     if terapeak_on:
                         set_name = ((tcg_card or {}).get("set") or {}).get("name") or card.get("set_name") or ""
                         bits = [card.get("name") or "", set_name, card.get("card_number") or "", "pokemon"]
                         query = " ".join(b for b in bits if b)
                         with queries_lock:
                             terapeak_queries_ready[int(card["id"])] = query
-                except Exception as exc:
-                    print(f"[pricing pass1] {card.get('name')}: {exc}", file=sys.stderr)
-                finally:
-                    pass1_progress[0] += 1
+                    with progress_lock:
+                        pass1_progress[0] += 1
                     update_message()
 
             # Spin Pass 1 across n_tcg_workers threads.
@@ -401,20 +399,36 @@ def api_run_pricing_all():
                                     cardmarket_trend_usd=row.get("cardmarket_trend_usd"),
                                     terapeak_median_usd=tp_med,
                                 )
+                                # Merge with Pass-1 state instead of clobbering it:
+                                # Pass 1 may have written match warnings ("⚠") and
+                                # clamped confidence — a wrong-card match must stay
+                                # low-confidence no matter how well sources agree.
+                                existing_notes = row.get("pricing_notes") or ""
+                                new_notes = result.notes or ""
+                                if new_notes and new_notes not in existing_notes:
+                                    merged_notes = f"{existing_notes}; {new_notes}" if existing_notes else new_notes
+                                else:
+                                    merged_notes = existing_notes
+                                conf = result.confidence
+                                needs_review = result.needs_review
+                                if "⚠" in existing_notes:
+                                    conf = min(conf, 0.2)
+                                    needs_review = True
                                 patch = {
                                     "terapeak_median_usd": tp_med,
                                     "terapeak_sold_count_365d": tp_count,
                                     "final_price": result.price,
-                                    "pricing_confidence": result.confidence,
+                                    "pricing_confidence": conf,
                                     "outlier_flag": result.outlier_flag,
-                                    "needs_review": result.needs_review,
-                                    "pricing_notes": result.notes or row.get("pricing_notes"),
+                                    "needs_review": needs_review,
+                                    "pricing_notes": merged_notes,
                                 }
                                 with db.connect(DB_PATH) as conn:
                                     db.update_card(conn, card_id, patch)
                             except Exception as exc:
                                 print(f"[terapeak merge] id={card_id}: {exc}", file=sys.stderr)
-                        pass2_progress[0] += 1
+                        with progress_lock:
+                            pass2_progress[0] += 1
                         update_message()
 
                     def drain_terapeak():
@@ -559,7 +573,7 @@ def _price_card(card: dict, terapeak=None, return_card: bool = False):
     ebay_stats: dict[str, Any] = {"median": None, "max": None, "count": 0}
     try:
         query = ebay.build_query(name=name, set_name=set_name, card_number=card_number)
-        ebay_stats = ebay.sold_stats(query=query, days=30, condition="NEW")
+        ebay_stats = ebay.sold_stats(query=query, days=30)
     except EbayAuthError as exc:
         print(f"[ebay auth] {exc}", file=sys.stderr)
 

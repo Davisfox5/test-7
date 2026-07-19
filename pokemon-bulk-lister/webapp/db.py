@@ -116,6 +116,10 @@ def connect(db_path: str = DEFAULT_DB_PATH) -> Iterator[sqlite3.Connection]:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
+    # WAL allows one writer at a time; without a busy_timeout a second concurrent
+    # writer raises "database is locked" immediately, and the parallel pricing
+    # job then silently drops that card's update. Wait instead.
+    conn.execute("PRAGMA busy_timeout = 10000;")
     try:
         yield conn
     finally:

@@ -50,9 +50,18 @@ def aggregate(
          reflects a different printing's price under one of the two fields).
          Drop the smaller source and use the other — TCGplayer market is
          usually the more trustworthy daily-updated source for US pricing.
-      2) Take the median + max of the remaining non-null prices.
-         If max > 2.5x median, use the second-highest and flag outlier.
-         Else use max.
+      2) Price = MEDIAN of the remaining non-null sources.
+         ebay_max_30d is recorded in `sources` for display but does NOT
+         enter the aggregate: it comes from the same 30-day comp set as
+         ebay_median_30d, so counting both double-weighted eBay and biased
+         the result high.
+         - With >=3 sources, a max > 2.5x median is dropped as an outlier
+           and the median re-taken over the rest.
+         - With exactly 2 sources disagreeing >2.5x AND by more than the
+           absolute noise floor ($2), use the LOWER one (their median would
+           just split the difference; over-listing eats returns,
+           under-listing only eats margin).
+         Either correction sets outlier_flag and forces needs_review.
 
     Cardmarket trend price should already be FX-converted to USD by caller.
     """
@@ -90,7 +99,6 @@ def aggregate(
     prices = [
         tcgplayer_market,
         ebay_median_30d,
-        ebay_max_30d,
         cardmarket_trend_usd,
         terapeak_median_usd,
     ]
@@ -107,20 +115,32 @@ def aggregate(
         )
 
     median = statistics.median(valid)
-    candidate = max(valid)
+    hi = max(valid)
+    lo = min(valid)
     outlier_flag = False
     notes = data_correction_note
+    used = valid
 
-    if len(valid) >= 2 and candidate > OUTLIER_MULTIPLIER * median:
-        sorted_desc = sorted(valid, reverse=True)
-        price = sorted_desc[1]
+    if len(valid) >= 3 and hi > OUTLIER_MULTIPLIER * median:
+        used = sorted(valid)[:-1]
+        price = statistics.median(used)
         outlier_flag = True
-        extra = f"max {candidate:.2f} > {OUTLIER_MULTIPLIER}x median {median:.2f}; using second-highest"
+        extra = f"max {hi:.2f} > {OUTLIER_MULTIPLIER}x median {median:.2f}; dropped from aggregate"
+        notes = f"{notes}; {extra}" if notes else extra
+    elif (
+        len(valid) == 2
+        and hi > OUTLIER_MULTIPLIER * lo
+        and (hi - lo) > ABSOLUTE_NOISE_FLOOR_USD  # $0.10-vs-$0.30 is noise, not an outlier
+    ):
+        used = [lo]
+        price = lo
+        outlier_flag = True
+        extra = f"two sources disagree >{OUTLIER_MULTIPLIER}x ({lo:.2f} vs {hi:.2f}); using lower"
         notes = f"{notes}; {extra}" if notes else extra
     else:
-        price = candidate
+        price = median
 
-    confidence = _confidence(valid)
+    confidence = _confidence(used)
     needs_review = confidence < LOW_CONFIDENCE_THRESHOLD or outlier_flag
 
     return PricingResult(

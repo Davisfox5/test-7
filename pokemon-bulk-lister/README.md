@@ -188,15 +188,17 @@ For each card we collect up to five numbers:
 Rule:
 
 ```
-prices  = [tcg, cardmarket_usd, ebay_median_30d, ebay_max_30d, terapeak_median_usd]
-median  = statistics.median(non_null(prices))
-candidate = max(prices)
+prices = [tcg, cardmarket_usd, ebay_median_30d, terapeak_median_usd]
+# ebay_max_30d is displayed but NOT aggregated — it's the same comp set as
+# ebay_median_30d and double-counting eBay biased prices high.
+valid  = non_null(prices)
 
-if candidate > 2.5 * median:
-    final  = second_highest(prices)
-    outlier_flag = True
+if len(valid) >= 3 and max(valid) > 2.5 * median(valid):
+    final = median(valid minus max)          # drop outlier, flag for review
+elif len(valid) == 2 and max > 2.5 * min and (max - min) > $2:
+    final = min(valid)                       # conservative: don't over-list
 else:
-    final  = candidate
+    final = median(valid)
 ```
 
 `confidence` is `1.0` if the non-null prices are all within 20% of each

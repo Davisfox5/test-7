@@ -1,12 +1,13 @@
 """eBay client — OAuth client-credentials + Browse API + Marketplace Insights API.
 
 Marketplace Insights returns sold-item data (last 90 days). We filter to 30 days
-and Near Mint English Pokémon TCG singles.
+of English Pokémon TCG singles, excluding graded slabs by title.
 """
 from __future__ import annotations
 
 import base64
 import os
+import re
 import statistics
 import time
 from datetime import datetime, timedelta, timezone
@@ -19,6 +20,11 @@ PRODUCTION_BASE = "https://api.ebay.com"
 SANDBOX_BASE = "https://api.sandbox.ebay.com"
 
 POKEMON_CATEGORY_ID = "183454"  # Collectible Card Games > Pokémon TCG > Individual Cards
+
+# Sold comps whose titles mention a grading service are slabs, not raw singles;
+# they'd inflate the median/max. Filtered client-side because the Insights
+# condition filter can't express "raw ungraded".
+GRADED_TITLE_RE = re.compile(r"\b(psa|bgs|cgc|sgc|graded|slab(?:bed)?|gem\s*mint\s*10)\b", re.I)
 SCOPES = " ".join(
     [
         "https://api.ebay.com/oauth/api_scope",
@@ -86,31 +92,41 @@ class EbayClient:
         self,
         query: str,
         days: int = 30,
-        condition: str = "NEW",
+        condition: Optional[str] = None,
         limit: int = 50,
     ) -> list[dict]:
         """Search Marketplace Insights for sold listings.
 
         eBay condition values: NEW, LIKE_NEW, USED_EXCELLENT, USED_VERY_GOOD, USED_GOOD.
-        For ungraded NM cards we use NEW. Graded cards have their own filters.
+        Raw singles are listed under a mix of these (mostly Used variants, NOT New),
+        so by default we don't filter on condition at all — filtering to NEW was
+        observed to return zero comps for virtually every raw card. Graded slabs
+        are excluded downstream by title (GRADED_TITLE_RE).
         """
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         filters = [
             f"categoryIds:{{{POKEMON_CATEGORY_ID}}}",
-            f"conditions:{{{condition}}}",
             f"itemLocationCountry:US",
             f"lastSoldDate:[{cutoff.strftime('%Y-%m-%dT%H:%M:%S.000Z')}..]",
         ]
+        if condition:
+            filters.insert(1, f"conditions:{{{condition}}}")
         params = {
             "q": query,
             "filter": ",".join(filters),
             "limit": str(min(limit, 200)),
         }
         url = f"{self.base_url}/buy/marketplace_insights/v1_beta/item_sales/search"
-        resp = self._session.get(url, headers=self._headers(), params=params, timeout=self.timeout)
-        if resp.status_code == 401:
-            self._token = None
+        resp = None
+        for attempt in range(3):
             resp = self._session.get(url, headers=self._headers(), params=params, timeout=self.timeout)
+            if resp.status_code == 401:
+                self._token = None
+                continue
+            if resp.status_code == 429 or resp.status_code >= 500:
+                time.sleep(2 ** attempt)
+                continue
+            break
         if resp.status_code == 403:
             raise EbayAuthError(
                 "Marketplace Insights returned 403 — your app probably isn't approved for "
@@ -123,12 +139,18 @@ class EbayClient:
         self,
         query: str,
         days: int = 30,
-        condition: str = "NEW",
+        condition: Optional[str] = None,
     ) -> dict:
-        """Return median / max / count of sold listings for a query."""
+        """Return median / max / count of sold raw-card listings for a query.
+
+        Graded slabs (PSA/BGS/CGC/... in the title) are excluded so they don't
+        inflate the stats for raw singles.
+        """
         items = self.search_sold(query=query, days=days, condition=condition)
         prices: list[float] = []
         for it in items:
+            if GRADED_TITLE_RE.search(it.get("title") or ""):
+                continue
             price = (it.get("lastSoldPrice") or {}).get("value")
             currency = (it.get("lastSoldPrice") or {}).get("currency", "USD")
             if price is None or currency != "USD":

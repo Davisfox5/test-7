@@ -638,6 +638,124 @@ def _price_card(card: dict, terapeak=None, return_card: bool = False):
 
 
 # ----------------------------------------------------------------------
+# Identification (Claude vision)
+# ----------------------------------------------------------------------
+
+# Page-level results below this confidence get a per-crop retry (better
+# small-text legibility on the set symbol / collector number).
+IDENTIFY_RETRY_CONF = float(os.getenv("VISION_RETRY_CONFIDENCE", "0.6"))
+
+
+def _identification_patch(res: dict, card: dict) -> dict[str, Any]:
+    num = (res.get("card_number") or "").strip()
+    num = num.lstrip("0") or num  # pokemontcg.io numbers carry no leading zeros
+    patch: dict[str, Any] = {
+        "name": (res.get("name") or "").strip(),
+        "set_name": (res.get("set_name") or "").strip(),
+        "set_code": (res.get("set_code") or "").strip().lower(),
+        "card_number": num,
+        "rarity": (res.get("rarity") or "").strip(),
+        "is_holo": bool(res.get("is_holo")),
+        "id_confidence": round(float(res.get("confidence") or 0.0), 3),
+    }
+    if not (card.get("condition_guess") or "").strip():
+        patch["condition_guess"] = "NM"  # inventory default: Near Mint unless noted
+    return patch
+
+
+@app.route("/api/cards/<int:card_id>/identify", methods=["POST"])
+def api_identify_card(card_id: int):
+    with db.connect(DB_PATH) as conn:
+        card = db.get_card(conn, card_id)
+    if not card:
+        abort(404)
+    crop = ROOT / card["crop_path"]
+    if not crop.exists():
+        return jsonify({"error": f"crop not found: {card['crop_path']}"}), 404
+    try:
+        from lib.vision_identify import identify_crop
+        res = identify_crop(str(crop))
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"error": f"identification failed: {exc}"}), 502
+    with db.connect(DB_PATH) as conn:
+        updated = db.update_card(conn, card_id, _identification_patch(res, card))
+    return jsonify(updated)
+
+
+@app.route("/api/identify/run-all", methods=["POST"])
+def api_identify_all():
+    with _job_lock:
+        if _job_state["running"]:
+            return jsonify({"error": "another job is running"}), 409
+        _job_state.update(running=True, progress=0, total=0, message="identifying…", terapeak=False)
+
+    def worker():
+        try:
+            from lib.vision_identify import identify_crop, identify_page
+
+            with db.connect(DB_PATH) as conn:
+                cards = db.list_cards(conn, sort="oldest", unidentified_only=True)
+                grids = {int(r["id"]): dict(r) for r in conn.execute("SELECT * FROM grids").fetchall()}
+            _job_state["total"] = len(cards)
+            if not cards:
+                _job_state["message"] = "nothing to identify"
+                return
+
+            by_grid: dict[Any, list[dict]] = {}
+            for c in cards:
+                by_grid.setdefault(c.get("grid_id"), []).append(c)
+
+            done = 0
+            identified = 0
+            for grid_id, group in by_grid.items():
+                # Pass 1: one call for the whole binder page (~9x cheaper than
+                # per-crop). Falls back to per-crop when the page image is gone.
+                page_results: dict[tuple, dict] = {}
+                grid = grids.get(grid_id) if grid_id is not None else None
+                if grid:
+                    p = Path(grid["original_path"])
+                    page_path = p if p.is_absolute() else ROOT / p
+                    if page_path.exists():
+                        try:
+                            page_results = {
+                                (r.get("row"), r.get("col")): r
+                                for r in identify_page(str(page_path))
+                            }
+                        except Exception as exc:
+                            print(f"[identify] page grid={grid_id}: {exc}", file=sys.stderr)
+
+                for card in group:
+                    res = page_results.get((card.get("row"), card.get("col")))
+                    if res is None or float(res.get("confidence") or 0.0) < IDENTIFY_RETRY_CONF:
+                        crop = ROOT / card["crop_path"]
+                        if crop.exists():
+                            try:
+                                crop_res = identify_crop(str(crop))
+                                if res is None or float(crop_res.get("confidence") or 0.0) >= float(res.get("confidence") or 0.0):
+                                    res = crop_res
+                            except Exception as exc:
+                                print(f"[identify] crop id={card['id']}: {exc}", file=sys.stderr)
+                    if res and (res.get("name") or "").strip():
+                        with db.connect(DB_PATH) as conn:
+                            db.update_card(conn, int(card["id"]), _identification_patch(res, card))
+                        identified += 1
+                    done += 1
+                    _job_state["progress"] = done
+                    _job_state["message"] = f"Identifying {done}/{len(cards)} ({identified} matched)"
+
+            _job_state["message"] = f"done — identified {identified}/{len(cards)}"
+        except Exception as exc:
+            traceback.print_exc()
+            _job_state["message"] = f"identify failed: {exc}"
+        finally:
+            _job_state["running"] = False
+
+    threading.Thread(target=worker, daemon=True).start()
+    return jsonify({"started": True})
+
+
+# ----------------------------------------------------------------------
 # Export + image upload
 # ----------------------------------------------------------------------
 

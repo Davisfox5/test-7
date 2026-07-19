@@ -298,6 +298,33 @@ async function saveEdit({ priceAfter = false } = {}) {
   }
 }
 
+async function aiIdentify() {
+  if (!state.editing) return;
+  const btn = $("#modal-identify-btn");
+  btn.disabled = true; const orig = btn.textContent; btn.textContent = "Identifying…";
+  try {
+    const updated = await api(`/api/cards/${state.editing}/identify`, { method: "POST" });
+    const form = $("#edit-form");
+    form.name.value = updated.name || "";
+    form.set_name.value = updated.set_name || "";
+    form.set_code.value = updated.set_code || "";
+    form.card_number.value = updated.card_number || "";
+    form.rarity.value = updated.rarity || "";
+    form.condition_guess.value = updated.condition_guess || "";
+    form.is_holo.checked = !!updated.is_holo;
+    form.id_confidence.value = updated.id_confidence ?? 0;
+    const idx = state.cards.findIndex(c => c.id === updated.id);
+    if (idx >= 0) state.cards[idx] = updated;
+    $("#modal-title").textContent = `Edit · ${updated.name || "(unidentified)"}`;
+    btn.textContent = "Identified ✓";
+    await new Promise(r => setTimeout(r, 400));
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
+  }
+}
+
 async function uploadCloudinary() {
   if (!state.editing) return;
   const btn = $("#modal-upload-btn");
@@ -321,6 +348,7 @@ function setupModal() {
   });
   $("#edit-form").addEventListener("submit", ev => { ev.preventDefault(); saveEdit(); });
   $("#modal-price-btn").addEventListener("click", () => saveEdit({ priceAfter: true }));
+  $("#modal-identify-btn").addEventListener("click", aiIdentify);
   $("#modal-upload-btn").addEventListener("click", uploadCloudinary);
 }
 
@@ -435,6 +463,18 @@ function setupToolbar() {
   $("#filter-review").addEventListener("change", e => { state.needsReview = e.target.checked; loadCards(); });
   $("#filter-unid").addEventListener("change", e => { state.unidentified = e.target.checked; loadCards(); });
 
+  $("#identify-btn").addEventListener("click", async () => {
+    const btn = $("#identify-btn");
+    btn.disabled = true;
+    try {
+      await api("/api/identify/run-all", { method: "POST" });
+      pollJob();
+    } catch (err) {
+      alert(err.message);
+      btn.disabled = false;
+    }
+  });
+
   $("#run-pricing-btn").addEventListener("click", async () => {
     const btn = $("#run-pricing-btn");
     btn.disabled = true;
@@ -491,6 +531,8 @@ async function pollJob() {
       else {
         await loadCards();
         $("#run-pricing-btn").disabled = false;
+        const identifyBtn = $("#identify-btn");
+        if (identifyBtn) identifyBtn.disabled = false;
         setTimeout(() => bar.classList.add("hidden"), 1500);
       }
     } catch {

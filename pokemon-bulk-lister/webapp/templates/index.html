@@ -41,6 +41,7 @@
         <input type="checkbox" id="use-terapeak" />
         Use Terapeak <span class="muted small" id="terapeak-status">(checking…)</span>
       </label>
+      <button id="identify-btn" title="AI-identify all unidentified cards (one Claude vision call per binder page)">Identify all (AI)</button>
       <button id="run-pricing-btn">Run pricing (all)</button>
       <button id="export-csv-btn">Export CSVs</button>
       <button id="bundle-btn" disabled title="Select 2+ cards to bundle as a single lot listing">Bundle selected (0)</button>
@@ -124,6 +125,7 @@
           <div class="prices-grid" id="modal-prices"></div>
           <div class="actions">
             <button type="submit">Save</button>
+            <button type="button" id="modal-identify-btn" title="Identify this card with Claude vision">AI identify</button>
             <button type="button" id="modal-price-btn">Save + price now</button>
             <button type="button" id="modal-upload-btn">Push to Cloudinary</button>
           </div>

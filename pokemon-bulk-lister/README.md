@@ -54,10 +54,14 @@ python -m webapp.app
 Data lives at `output/db.sqlite` (auto-created; auto-imports any existing
 `output/cards.json` / `output/cards_priced.json` on first launch). Drop binder
 photos into the drop-zone — they're split into crops automatically and inserted
-as empty card rows. Edit identification fields inline or paste a JSON list of
-identifications in bulk (handy for dropping in the answers Claude gives you in
-chat). Per-card "Price" runs the eBay + TCGplayer + Cardmarket pipeline; the
-"Run pricing (all)" button kicks it off as a background job with a progress bar.
+as empty card rows. **"Identify all (AI)"** identifies every unidentified card
+with Claude vision (one call per binder page + per-crop retries for
+low-confidence cells; needs `ANTHROPIC_API_KEY`, model set by `VISION_MODEL`,
+default Haiku — roughly a cent per page). You can still edit fields inline, use
+the per-card "AI identify" button in the edit modal, or paste a JSON list of
+identifications in bulk. Per-card "Price" runs the eBay + TCGplayer +
+Cardmarket pipeline; the "Run pricing (all)" button kicks it off as a
+background job with a progress bar.
 
 The CLI scripts below still work — they read/write the same `output/` files —
 so you can mix and match.
@@ -205,6 +209,16 @@ else:
 other, then decays linearly to `0.0` at 120% spread. Single-source falls
 back to `0.5`. Anything below `0.6` (or any outlier) is marked
 `needs_review = true` and bubbles to the top of `review.html`.
+
+Two cost/robustness refinements in the webapp pipeline:
+
+- **Cardmarket daily price-guide fallback** — when pokemontcg.io has no data
+  (its catalog lags new sets), a cached daily download of Cardmarket's free,
+  TOS-blessed price-guide JSON supplies a guarded, name-matched trend price
+  (`CARDMARKET_FALLBACK=1`, cache under `output/cache/cardmarket/`).
+- **Terapeak value gate** — "Run pricing (all)" skips the Terapeak scrape for
+  cards confidently priced under `TERAPEAK_MIN_VALUE` (default $3); a 365-day
+  comp adds nothing to a bulk common and each scrape costs ~5s + account risk.
 
 ## Repo layout
 

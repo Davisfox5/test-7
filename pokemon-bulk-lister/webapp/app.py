@@ -694,6 +694,83 @@ def _price_card(card: dict, terapeak=None, return_card: bool = False):
 # small-text legibility on the set symbol / collector number).
 IDENTIFY_RETRY_CONF = float(os.getenv("VISION_RETRY_CONFIDENCE", "0.6"))
 
+# Free identification before any AI call: (1) learned cache of crops we
+# already identified, (2) perceptual-hash match against the official
+# pokemontcg.io art index (built by scripts/08_build_art_index.py).
+# Both accept only high-confidence matches; everything else falls through
+# to the AI, so this can only cut cost, never quality. ART_MATCH=0 disables.
+ART_MATCH_ENABLED = os.getenv("ART_MATCH", "1") == "1"
+ART_INDEX_DIR = OUTPUT_DIR / "cache" / "art_index" / "catalog"
+LEARNED_CACHE_PATH = OUTPUT_DIR / "cache" / "art_index" / "learned.jsonl"
+ART_MATCH_CONFIDENCE = 0.9   # reported id_confidence for a catalog art match
+LEARN_MIN_CONFIDENCE = 0.6   # only cache AI results at least this confident
+
+_art_lock = threading.Lock()
+_art_state: dict[str, Any] = {"index": None, "learned": None}
+
+
+def _art_matchers():
+    with _art_lock:
+        if _art_state["index"] is None:
+            from lib.art_match import ArtIndex, LearnedCache
+            _art_state["index"] = ArtIndex.load(ART_INDEX_DIR)
+            _art_state["learned"] = LearnedCache(LEARNED_CACHE_PATH)
+        return _art_state["index"], _art_state["learned"]
+
+
+def _match_crop(crop_path: Path) -> Optional[dict]:
+    """Identify a crop by perceptual hash. Returns a vision-shaped result dict
+    with a `_source` of "cache" or "match", or None if nothing confident."""
+    if not ART_MATCH_ENABLED:
+        return None
+    from lib.art_match import query_views
+    views = query_views(crop_path)
+    if views is None:
+        return None
+    index, learned = _art_matchers()
+    hit = learned.match(views)
+    source = "cache"
+    if hit is None:
+        hit = index.match(views)
+        source = "match"
+    if hit is None:
+        return None
+    m = hit["meta"]
+    return {
+        "name": m.get("name") or "",
+        "set_name": m.get("set_name") or "",
+        "set_code": m.get("set_code") or "",
+        "card_number": m.get("card_number") or "",
+        "rarity": m.get("rarity") or "",
+        "is_holo": bool(m.get("is_holo")),
+        "confidence": float(m.get("confidence") or ART_MATCH_CONFIDENCE),
+        "_source": source,
+    }
+
+
+def _remember_identification(crop_path: Path, res: dict) -> None:
+    """Feed a confident AI identification into the learned cache so duplicate
+    cards and re-uploads never pay for AI again."""
+    if not ART_MATCH_ENABLED or res.get("_source"):
+        return
+    if float(res.get("confidence") or 0.0) < LEARN_MIN_CONFIDENCE:
+        return
+    if not (res.get("name") or "").strip():
+        return
+    try:
+        from lib.art_match import index_descriptor
+        desc = index_descriptor(crop_path)
+        if desc is None:
+            return
+        _, learned = _art_matchers()
+        learned.add(desc, {
+            k: res.get(k)
+            for k in ("name", "set_name", "set_code", "card_number",
+                      "rarity", "is_holo", "confidence")
+        })
+    except Exception:
+        traceback.print_exc()  # cache failures must never break identification
+
 
 def _identification_patch(res: dict, card: dict) -> dict[str, Any]:
     num = (res.get("card_number") or "").strip()
@@ -721,14 +798,21 @@ def api_identify_card(card_id: int):
     crop = ROOT / card["crop_path"]
     if not crop.exists():
         return jsonify({"error": f"crop not found: {card['crop_path']}"}), 404
-    try:
-        from lib.vision_identify import identify_crop
-        res = identify_crop(str(crop))
-    except Exception as exc:
-        traceback.print_exc()
-        return jsonify({"error": f"identification failed: {exc}"}), 502
+    body = request.get_json(silent=True) or {}
+    res = None if body.get("force_ai") else _match_crop(crop)
+    if res is None:
+        try:
+            from lib.vision_identify import identify_crop
+            res = identify_crop(str(crop))
+        except Exception as exc:
+            traceback.print_exc()
+            return jsonify({"error": f"identification failed: {exc}"}), 502
+        _remember_identification(crop, res)
     with db.connect(DB_PATH) as conn:
         updated = db.update_card(conn, card_id, _identification_patch(res, card))
+    updated["identified_by"] = {"cache": "image cache", "match": "art match"}.get(
+        res.get("_source"), "AI"
+    )
     return jsonify(updated)
 
 
@@ -756,15 +840,49 @@ def api_identify_all():
                 by_grid.setdefault(c.get("grid_id"), []).append(c)
 
             done = 0
-            identified = 0
+            by_image = 0
+            by_ai = 0
+
+            def _apply(card: dict, res: dict) -> None:
+                with db.connect(DB_PATH) as conn:
+                    db.update_card(conn, int(card["id"]), _identification_patch(res, card))
+
+            def _tick() -> None:
+                _job_state["progress"] = done
+                _job_state["message"] = (
+                    f"Identifying {done}/{len(cards)} "
+                    f"({by_image} by image match, {by_ai} by AI)"
+                )
+
             for grid_id, group in by_grid.items():
-                # Pass 1: one call for the whole binder page (~9x cheaper than
-                # per-crop). Falls back to per-crop when the page image is gone.
+                # Pass 0 (free): learned cache + art-index hash match.
+                unmatched: list[dict] = []
+                for card in group:
+                    crop = ROOT / card["crop_path"]
+                    res = _match_crop(crop) if crop.exists() else None
+                    if res is not None:
+                        _apply(card, res)
+                        by_image += 1
+                        done += 1
+                        _tick()
+                    else:
+                        unmatched.append(card)
+                if not unmatched:
+                    continue
+
+                # Pass 1 (AI): one page-level call when several crops on the
+                # page still need it (~9x cheaper than per-crop); otherwise go
+                # straight to per-crop calls for the stragglers.
                 page_results: dict[tuple, dict] = {}
                 grid = grids.get(grid_id) if grid_id is not None else None
-                if grid:
+                if grid and len(unmatched) >= 3:
                     p = Path(grid["original_path"])
                     page_path = p if p.is_absolute() else ROOT / p
+                    # Prefer the leveled page saved at split time — its
+                    # orientation matches the crops' row/col assignments.
+                    prepared = OUTPUT_DIR / "pages" / f"{page_path.stem}.jpg"
+                    if prepared.exists():
+                        page_path = prepared
                     if page_path.exists():
                         try:
                             page_results = {
@@ -774,10 +892,10 @@ def api_identify_all():
                         except Exception as exc:
                             print(f"[identify] page grid={grid_id}: {exc}", file=sys.stderr)
 
-                for card in group:
+                for card in unmatched:
                     res = page_results.get((card.get("row"), card.get("col")))
+                    crop = ROOT / card["crop_path"]
                     if res is None or float(res.get("confidence") or 0.0) < IDENTIFY_RETRY_CONF:
-                        crop = ROOT / card["crop_path"]
                         if crop.exists():
                             try:
                                 crop_res = identify_crop(str(crop))
@@ -786,14 +904,17 @@ def api_identify_all():
                             except Exception as exc:
                                 print(f"[identify] crop id={card['id']}: {exc}", file=sys.stderr)
                     if res and (res.get("name") or "").strip():
-                        with db.connect(DB_PATH) as conn:
-                            db.update_card(conn, int(card["id"]), _identification_patch(res, card))
-                        identified += 1
+                        _apply(card, res)
+                        by_ai += 1
+                        if crop.exists():
+                            _remember_identification(crop, res)
                     done += 1
-                    _job_state["progress"] = done
-                    _job_state["message"] = f"Identifying {done}/{len(cards)} ({identified} matched)"
+                    _tick()
 
-            _job_state["message"] = f"done — identified {identified}/{len(cards)}"
+            _job_state["message"] = (
+                f"done — identified {by_image + by_ai}/{len(cards)} "
+                f"({by_image} free by image match, {by_ai} by AI)"
+            )
         except Exception as exc:
             traceback.print_exc()
             _job_state["message"] = f"identify failed: {exc}"

@@ -303,7 +303,16 @@ async function aiIdentify() {
   const btn = $("#modal-identify-btn");
   btn.disabled = true; const orig = btn.textContent; btn.textContent = "Identifying…";
   try {
-    const updated = await api(`/api/cards/${state.editing}/identify`, { method: "POST" });
+    // A card that already has a name is being *re*-identified — the user
+    // disagrees with the current ID, so skip the free image-match layers
+    // (which would just return the same answer) and force a fresh AI look.
+    const current = state.cards.find(c => c.id === state.editing);
+    const forceAi = !!(current && (current.name || "").trim());
+    const updated = await api(`/api/cards/${state.editing}/identify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force_ai: forceAi }),
+    });
     const form = $("#edit-form");
     form.name.value = updated.name || "";
     form.set_name.value = updated.set_name || "";

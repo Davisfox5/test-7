@@ -56,3 +56,31 @@ already landed are marked ✅ with their commit.
 - Pricing APIs: $0 (pokemontcg.io free tier + Cardmarket daily download).
 - Biggest future saving: cache price lookups by `tcgplayer_product_id`
   (duplicate commons dominate bulk) — fits naturally in your catalog dedup.
+
+## Image identification experiment (2026-07-22)
+
+Goal: identify crops without AI. What failed and what shipped, so nobody
+re-treads this ground:
+
+- **Perceptual bit-hashes (dHash-256 / pHash-64) do not work on binder
+  photos.** Median same-card distance ~99/256 vs. ~random 128 — card layouts
+  are dominated by flat regions where sensor noise flips gradient signs, and
+  framing offsets (binder margins in the crop) shift everything. Grayscale
+  loses most of the remaining signal: all card frames look alike.
+- **What works:** (1) segment the card from the dark pocket background
+  (saturation+value mask → open → close → minAreaRect, aspect-gated) and
+  perspective-warp to a canonical 200x280 frame; (2) describe it as a
+  blurred 12x12 **color** thumbnail, contrast-normalized; (3) query with
+  jittered reframings, cosine distance, and a double gate: best distance
+  < 0.15 AND ≥ 0.05 ahead of the nearest *different* card (name+number).
+- **Validation (153 real through-sleeve crops, 2,511-card index):** 64
+  accepts, 64 correct, 0 wrong — 42% of AI calls eliminated at zero quality
+  cost. The 8 "disagreements" with stored AI answers were all *AI* errors
+  (page-level row/col mix-ups on two pages), confirmed visually and fixed.
+- Same-art reprints across sets tie under the margin gate and intentionally
+  fall through to AI (it reads the collector number). Reverse-holo vs.
+  regular cannot be distinguished from art; rarity heuristic only.
+- pokemontcg.io's REST API 500s frequently (deep pagination always, shallow
+  queries in bad weather). The official static export at
+  github.com/PokemonTCG/pokemon-tcg-data is the reliable source; the builder
+  uses it first and falls back to the API.

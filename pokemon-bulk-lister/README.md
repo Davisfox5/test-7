@@ -66,6 +66,40 @@ background job with a progress bar.
 The CLI scripts below still work — they read/write the same `output/` files —
 so you can mix and match.
 
+### Free image identification (cuts AI cost ~50%+)
+
+Before any AI call, each crop is first identified by image alone, at zero cost:
+
+1. **Learned cache** — crops the app has already identified (AI or otherwise)
+   are remembered by a visual fingerprint at
+   `output/cache/art_index/learned.jsonl`. Duplicate cards and re-uploads
+   never pay for AI again.
+2. **Official-art match** — the crop is compared against the official
+   pokemontcg.io card images, the way commercial scanner apps work. Build the
+   index once (resumable; ~20-40 min for the full catalog, seconds per set):
+
+   ```bash
+   python scripts/08_build_art_index.py                 # full catalog
+   python scripts/08_build_art_index.py --sets sv7,sv8  # or just your sets
+   ```
+
+Both layers accept a match only when it's unambiguous (validated on 153 real
+through-sleeve binder photos: 42% matched with zero wrong answers — it even
+corrected 8 AI misidentifications). Everything else falls through to
+the AI, so quality never drops; `ART_MATCH=0` turns the layers off. Two known
+limits: reverse-holo vs. regular foiling can't be told apart from art alone,
+and same-art reprints across sets are deliberately left to the AI (it reads
+the collector number).
+
+### Advanced: list on your own eBay account
+
+`/portfolio` → **⚙ Advanced** lets a signed-in user store their *own* eBay
+developer keyset (Client ID / Cert ID / RuName from
+[developer.ebay.com](https://developer.ebay.com/)) and run the one-time
+consent flow. Once connected, an **eBay** button appears on each card in "My
+cards" that publishes a live listing via the official Sell API under *their*
+account. Users without keys never see any of it.
+
 ## Credentials
 
 ### Cloudinary

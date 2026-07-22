@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Create account — Pokémon Card Portfolio</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='portfolio.css') }}">
+</head>
+<body class="auth-page">
+  <main class="auth-card">
+    <h1>Create your account</h1>
+    <p class="auth-sub">Your library, priced automatically, with sell alerts.</p>
+    {% if error %}<p class="auth-error">{{ error }}</p>{% endif %}
+    <form method="post" action="/register">
+      <label>Email
+        <input type="email" name="email" required autocomplete="email" autofocus>
+      </label>
+      <label>Password <span class="hint">(8+ characters)</span>
+        <input type="password" name="password" required minlength="8" autocomplete="new-password">
+      </label>
+      <button type="submit" class="btn btn-primary">Create account</button>
+    </form>
+    <p class="auth-alt">Already registered? <a href="/login">Log in</a></p>
+  </main>
+</body>
+</html>

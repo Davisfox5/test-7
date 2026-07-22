@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Marketplace — Pokémon Card Portfolio</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='portfolio.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="brand">Card Portfolio</span>
+      <nav>
+        <a href="/">Processing bench</a>
+        <a href="/portfolio">Portfolio</a>
+        <a href="/market" class="active">Marketplace</a>
+      </nav>
+    </div>
+    <div class="topbar-right">
+      <a href="/logout" class="btn btn-ghost">Log out</a>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Cards for sale</h2>
+        <span id="market-meta" class="muted"></span>
+      </div>
+      <div id="market-grid" class="market-grid">
+        <p class="muted">Loading…</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='market.js') }}"></script>
+</body>
+</html>

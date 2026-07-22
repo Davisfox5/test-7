@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Portfolio — Pokémon Card Portfolio</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='portfolio.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="brand">Card Portfolio</span>
+      <nav>
+        <a href="/">Processing bench</a>
+        <a href="/portfolio" class="active">Portfolio</a>
+        <a href="/market">Marketplace</a>
+      </nav>
+    </div>
+    <div class="topbar-right">
+      <button id="btn-refresh" class="btn">Refresh prices</button>
+      <button id="btn-advanced" class="btn btn-ghost" title="Advanced settings">⚙ Advanced</button>
+      <a href="/logout" class="btn btn-ghost">Log out</a>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <!-- Stat tiles -->
+    <section class="tiles">
+      <div class="tile">
+        <div class="tile-label">Portfolio value</div>
+        <div class="tile-value" id="t-value">—</div>
+        <div class="tile-sub" id="t-value-sub"></div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Cards</div>
+        <div class="tile-value" id="t-cards">—</div>
+        <div class="tile-sub" id="t-cards-sub"></div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Cost basis</div>
+        <div class="tile-value" id="t-cost">—</div>
+        <div class="tile-sub" id="t-cost-sub"></div>
+      </div>
+      <div class="tile">
+        <div class="tile-label">Sales balance</div>
+        <div class="tile-value" id="t-balance">—</div>
+        <div class="tile-sub" id="t-balance-sub"></div>
+      </div>
+    </section>
+
+    <!-- Value-over-time chart -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Portfolio value over time</h2>
+        <div class="range-row" role="group" aria-label="date range">
+          <button class="range-btn" data-days="30">30d</button>
+          <button class="range-btn active" data-days="90">90d</button>
+          <button class="range-btn" data-days="365">1y</button>
+        </div>
+      </div>
+      <div id="chart" class="chart" aria-label="portfolio value line chart"></div>
+    </section>
+
+    <div class="two-col">
+      <!-- Alerts -->
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Alerts <span id="alerts-unread" class="muted"></span></h2>
+          <button id="btn-read-all" class="btn btn-ghost">Mark all read</button>
+        </div>
+        <ul id="alerts-list" class="alerts-list"><li class="muted">Loading…</li></ul>
+      </section>
+
+      <!-- Alert rules -->
+      <section class="panel">
+        <div class="panel-head"><h2>Alert rules</h2></div>
+        <form id="rule-form" class="rule-form">
+          <select name="kind" aria-label="rule type">
+            <option value="sell_signal">Sell signal (rise %)</option>
+            <option value="pct_change">Any move (±%)</option>
+            <option value="price_above">Price above ($)</option>
+            <option value="price_below">Price below ($)</option>
+          </select>
+          <select name="catalog_card_id" aria-label="which card">
+            <option value="">All my cards</option>
+          </select>
+          <input name="threshold" type="number" step="any" min="0" placeholder="25" required aria-label="threshold">
+          <input name="window_days" type="number" min="1" value="30" aria-label="window (days)" title="window in days (for % rules)">
+          <button type="submit" class="btn">Add</button>
+        </form>
+        <ul id="rules-list" class="rules-list"></ul>
+      </section>
+    </div>
+
+    <!-- Inventory -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>My cards</h2>
+        <button id="btn-promote" class="btn btn-primary">Import priced bench cards</button>
+      </div>
+      <div class="table-scroll">
+        <table class="inv-table">
+          <thead>
+            <tr>
+              <th></th><th>Card</th><th>Cond.</th><th class="num">Qty</th>
+              <th class="num">Price</th><th class="num">7d</th><th class="num">Value</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="inv-body">
+            <tr><td colspan="8" class="muted">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Sales / purchases -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>My sales &amp; purchases</h2>
+        <span id="fee-note" class="muted"></span>
+      </div>
+      <ul id="market-list" class="rules-list"><li class="muted">Nothing yet.</li></ul>
+    </section>
+
+    <!-- Advanced settings (hidden until ⚙ Advanced is clicked) -->
+    <section class="panel hidden" id="advanced-panel">
+      <div class="panel-head"><h2>Advanced settings</h2></div>
+      <div class="adv-section">
+        <h3>List on eBay — bring your own API keys</h3>
+        <p class="muted">
+          Off by default. To list cards directly on <em>your</em> eBay account, create a
+          keyset at <a href="https://developer.ebay.com/" target="_blank" rel="noopener">developer.ebay.com</a>
+          (My Account → Application Keysets), add a RuName under User Tokens, then save the
+          keys here and connect your account. Your keys are stored on this server and used
+          only for your listings.
+        </p>
+        <div id="ebay-status" class="muted"></div>
+        <form id="ebay-keys-form" class="rule-form">
+          <input name="client_id" placeholder="Client ID (App ID)" required>
+          <input name="client_secret" type="password" placeholder="Client Secret (Cert ID)" required>
+          <input name="ru_name" placeholder="RuName (redirect name)" required>
+          <select name="env" aria-label="eBay environment">
+            <option value="production">production</option>
+            <option value="sandbox">sandbox</option>
+          </select>
+          <button type="submit" class="btn btn-primary">Save keys</button>
+          <button type="button" id="ebay-remove" class="btn btn-ghost hidden">Remove keys</button>
+        </form>
+        <div id="ebay-connect" class="rule-form hidden">
+          <a id="ebay-consent-link" class="btn" target="_blank" rel="noopener">Connect eBay account →</a>
+          <input id="ebay-redirect" placeholder="then paste the URL eBay redirected you to">
+          <button type="button" id="ebay-authorize" class="btn">Authorize</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='portfolio.js') }}"></script>
+</body>
+</html>

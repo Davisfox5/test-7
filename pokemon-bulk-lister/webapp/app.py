@@ -1141,6 +1141,34 @@ def _safe_filename(name: str) -> str:
     return safe or "grid.jpg"
 
 
+# ----------------------------------------------------------------------
+# Multi-user portfolio layer (append-only zone — see COORDINATION.md).
+# Blueprints live in webapp/{auth,catalog,portfolio}.py; the scheduler gets
+# _price_card injected so pricing logic stays defined once, above.
+# ----------------------------------------------------------------------
+
+from webapp import scheduler as price_scheduler  # noqa: E402
+from webapp.auth import auth_bp, ensure_secret_key  # noqa: E402
+from webapp.catalog import catalog_bp  # noqa: E402
+from webapp.marketplace import market_bp  # noqa: E402
+from webapp.models import init_models  # noqa: E402
+from webapp.portfolio import portfolio_bp  # noqa: E402
+
+ensure_secret_key(app)
+init_models()
+app.register_blueprint(auth_bp)
+app.register_blueprint(catalog_bp)
+app.register_blueprint(portfolio_bp)
+app.register_blueprint(market_bp)
+price_scheduler.start(price_fn=_price_card)
+
+# [B] Advanced settings (per-user eBay API keys) — see webapp/settings.py.
+from webapp.settings import ensure_settings_tables, settings_bp  # noqa: E402
+
+app.register_blueprint(settings_bp)
+ensure_settings_tables()
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5050"))
     app.run(host="127.0.0.1", port=port, debug=os.getenv("FLASK_DEBUG") == "1")
